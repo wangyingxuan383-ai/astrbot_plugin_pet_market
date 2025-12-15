@@ -1,0 +1,92 @@
+{
+  "admin_uins": {
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "description": "管理员QQ号列表",
+    "default": [
+      "846994183",
+      "3864670906"
+    ],
+    "hint": "拥有特殊权限的QQ号"
+  },
+  "purchase_cooldown": {
+    "type": "int",
+    "description": "购买宠物冷却时间（秒）",
+    "default": 3600,
+    "hint": "例如：3600 表示 1 小时"
+  },
+  "work_cooldown": {
+    "type": "int",
+    "description": "打工冷却时间（秒）",
+    "default": 3600,
+    "hint": "例如：3600 表示 1 小时"
+  },
+  "train_cooldown": {
+    "type": "int",
+    "description": "训练冷却时间（秒）",
+    "default": 86400,
+    "hint": "例如：86400 表示 1 天"
+  },
+  "train_success_rate": {
+    "type": "float",
+    "description": "训练基础成功率（0~1）",
+    "default": 0.7,
+    "hint": "例如：0.7 表示 70%，进化阶段会额外加成"
+  },
+  "train_cost_rate": {
+    "type": "float",
+    "description": "训练费用占宠物身价的比例",
+    "default": 0.1,
+    "hint": "例如：0.1 表示 10%"
+  },
+  "bank_initial_limit": {
+    "type": "int",
+    "description": "银行初始存储上限（金币）",
+    "default": 1000,
+    "hint": "例如：1000 表示 1000 金币"
+  },
+  "bank_interest_rate": {
+    "type": "float",
+    "description": "银行每小时利息率（复利）",
+    "default": 0.01,
+    "hint": "例如：0.01 表示 1%，采用复利计算"
+  },
+  "bank_max_interest_time": {
+    "type": "int",
+    "description": "银行最大计息时间（小时）",
+    "default": 24,
+    "hint": "例如：24 表示最多累计24小时利息"
+  },
+  "transfer_fee_rate": {
+    "type": "float",
+    "description": "转账手续费率（0~1）",
+    "default": 0.1,
+    "hint": "例如：0.1 表示 10%"
+  },
+  "transfer_min_amount": {
+    "type": "int",
+    "description": "最低转账金额（金币）",
+    "default": 100,
+    "hint": "例如：100 表示最低转账 100 金币"
+  },
+  "transfer_cooldown": {
+    "type": "int",
+    "description": "转账冷却时间（秒）",
+    "default": 1800,
+    "hint": "例如：1800 表示 30 分钟"
+  },
+  "rob_cooldown": {
+    "type": "int",
+    "description": "抢劫冷却时间（秒）",
+    "default": 3600,
+    "hint": "例如：3600 表示 1 小时"
+  },
+  "pk_cooldown": {
+    "type": "int",
+    "description": "PK 决斗冷却时间（秒）",
+    "default": 3600,
+    "hint": "例如：3600 表示 1 小时"
+  }
+}

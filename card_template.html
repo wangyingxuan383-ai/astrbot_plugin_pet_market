@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>宠物信息卡片</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 30px;
+            max-width: 500px;
+            width: 100%;
+        }
+        .card-header {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .card-title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .card-subtitle {
+            font-size: 14px;
+            color: #999;
+        }
+        .card-body {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #666;
+        }
+        .info-value {
+            color: #333;
+            font-weight: 600;
+        }
+        .stage-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            color: white;
+            font-size: 14px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">{{name}}</div>
+            <div class="card-subtitle">宠物信息卡片</div>
+        </div>
+        <div class="card-body">
+            <div class="info-row">
+                <span class="info-label">阶段</span>
+                <span class="stage-badge" style="background: {{stage_color}};">{{stage}}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">身价</span>
+                <span class="info-value">{{value}} 金币</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">主人</span>
+                <span class="info-value">{{master}}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">余额</span>
+                <span class="info-value">{{coins}} 金币</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
