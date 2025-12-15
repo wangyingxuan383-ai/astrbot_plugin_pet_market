@@ -760,7 +760,7 @@ class Main(Star):
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
 
-       # 检查监狱状态
+        # 检查监狱状态
         jailed, remain = self._check_jailed(group_id, user_id)
         if jailed:
             hours = remain // 3600
