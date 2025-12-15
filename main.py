@@ -400,8 +400,13 @@ class Main(Star):
             url = await self.html_render(template, menu_data)
             yield event.image_result(url)
         except Exception as e:
-            logger.error(f"[宠物市场] 菜单生成失败: {e}")
-            yield event.plain_result("菜单生成失败，请稍后再试。")
+            logger.error(f"[宠物市场] 菜单图片生成失败: {e}，使用纯文本兜底")
+            # 兜底方案：使用纯文本菜单
+            text_menu = "🐾 宠物市场菜单\n\n"
+            for item in menu_data["items"]:
+                text_menu += f"{item['cmd']}\n  └─ {item['desc']}\n\n"
+            text_menu += "💡 提示：图片菜单生成失败，显示文本版本"
+            yield event.plain_result(text_menu)
 
     # 
     # ==================== 命令：宠物市场 ====================

@@ -80,9 +80,33 @@
 
 ## 📥 安装方式
 
+### 全新安装
 1. 将本插件文件夹放入 AstrBot 的 `plugins/` 目录
 2. 重启 AstrBot
 3. 群聊发送 `/宠物菜单` 开始游戏
+
+### 升级安装
+
+> ⚠️ **重要提示**：由于Python缓存机制，直接覆盖更新可能导致问题
+
+**推荐方法**（任选其一）：
+
+**方法1：完全重装**（推荐）
+1. 在AstrBot管理界面**完全卸载**旧版本插件
+2. 删除插件目录下的 `__pycache__` 文件夹
+3. 重新安装插件
+
+**方法2：清除缓存**
+```bash
+# 进入插件目录
+cd plugins/Pet-Market
+
+# 删除Python缓存
+Remove-Item -Recurse -Force __pycache__
+Remove-Item *.pyc
+
+# 重启AstrBot（必须重启，不能只reload）
+```
 
 ---
 
