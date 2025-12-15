@@ -367,7 +367,7 @@ class Main(Star):
 
     # ==================== 命令：宠物菜单 ====================
     @filter.command("宠物菜单")
-    async def pet_menu(self, event: AstrMessageEvent):
+    async def pet_menu(self, event: AstrMessageEvent, **kwargs):
         """显示功能菜单"""
         menu_data = {
             "title": "🐾 宠物市场菜单",
@@ -615,7 +615,7 @@ class Main(Star):
 
     # ==================== 命令：打工 ====================
     @filter.command("打工")
-    async def work(self, event: AstrMessageEvent):
+    async def work(self, event: AstrMessageEvent, **kwargs):
         """派遣宠物打工"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -755,7 +755,7 @@ class Main(Star):
 
     # ==================== 命令：赎身 ====================
     @filter.command("赎身")
-    async def ransom(self, event: AstrMessageEvent):
+    async def ransom(self, event: AstrMessageEvent, **kwargs):
         """宠物赎身"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -810,7 +810,7 @@ class Main(Star):
 
     # ==================== 命令：一键训练 ====================
     @filter.command("一键训练", alias={"批量训练"})
-    async def batch_train(self, event: AstrMessageEvent):
+    async def batch_train(self, event: AstrMessageEvent, **kwargs):
         """一键训练所有宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -990,7 +990,7 @@ class Main(Star):
 
     # ==================== 命令：我的宠物 ====================
     @filter.command("我的宠物")
-    async def my_pets(self, event: AstrMessageEvent):
+    async def my_pets(self, event: AstrMessageEvent, **kwargs):
         """查看自己的宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1019,7 +1019,7 @@ class Main(Star):
 
     # ==================== 命令：银行信息 ====================
     @filter.command("银行信息")
-    async def bank_info(self, event: AstrMessageEvent):
+    async def bank_info(self, event: AstrMessageEvent, **kwargs):
         """查看银行信息"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1049,7 +1049,7 @@ class Main(Star):
 
     # ==================== 命令：升级信用 ====================
     @filter.command("升级信用")
-    async def upgrade_bank(self, event: AstrMessageEvent):
+    async def upgrade_bank(self, event: AstrMessageEvent, **kwargs):
         """升级银行信用等级"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1084,7 +1084,7 @@ class Main(Star):
 
     # ==================== 命令：银行利息 ====================
     @filter.command("银行利息")
-    async def bank_interest_rate(self, event: AstrMessageEvent):
+    async def bank_interest_rate(self, event: AstrMessageEvent, **kwargs):
         """查看当前利息率"""
         rate = self.config.get("bank_interest_rate", 0.01)
         max_hours = self.config.get("bank_max_interest_time", 24)
@@ -1099,7 +1099,7 @@ class Main(Star):
 
     # ==================== 命令：领取利息 ====================
     @filter.command("领取利息")
-    async def collect_interest(self, event: AstrMessageEvent):
+    async def collect_interest(self, event: AstrMessageEvent, **kwargs):
         """领取银行利息"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1335,7 +1335,7 @@ class Main(Star):
 
     # ==================== 命令：转账记录 ====================
     @filter.command("转账记录")
-    async def transfer_history(self, event: AstrMessageEvent):
+    async def transfer_history(self, event: AstrMessageEvent, **kwargs):
         """查看转账记录"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1717,7 +1717,7 @@ class Main(Star):
             yield event.plain_result(f"✅ 已发放 {amount} 金币，当前余额 {user['coins']} 金币。")
 
     @filter.command("跳过冷却")
-    async def skip_cooldown(self, event: AstrMessageEvent):
+    async def skip_cooldown(self, event: AstrMessageEvent, **kwargs):
         """管理员清空自己的冷却时间"""
         user_id = str(event.get_sender_id())
         if not self._is_admin(user_id):
@@ -1757,7 +1757,7 @@ class Main(Star):
             yield event.plain_result(f"✅ 已向 {target_name} 发放 {amount} 金币。")
 
     @filter.command("手动清理")
-    async def manual_cleanup(self, event: AstrMessageEvent):
+    async def manual_cleanup(self, event: AstrMessageEvent, **kwargs):
         """管理员手动清理群数据"""
         user_id = str(event.get_sender_id())
         if not self._is_admin(user_id):
@@ -1775,7 +1775,7 @@ class Main(Star):
         yield event.plain_result(f"✅ 已清空本群所有数据，共 {removed} 条。")
 
     @filter.command("释放监狱")
-    async def release_jail(self, event: AstrMessageEvent):
+    async def release_jail(self, event: AstrMessageEvent, **kwargs):
         """管理员释放指定用户出监狱"""
         user_id = str(event.get_sender_id())
         if not self._is_admin(user_id):
