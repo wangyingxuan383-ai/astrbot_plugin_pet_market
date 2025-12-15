@@ -448,7 +448,7 @@ class Main(Star):
 
     # ==================== 命令：购买宠物 ====================
     @filter.command("购买宠物")
-    async def purchase_pet(self, event: AstrMessageEvent):
+    async def purchase_pet(self, event: AstrMessageEvent, **kwargs):
         """购买宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -562,7 +562,7 @@ class Main(Star):
 
     # ==================== 命令：放生宠物 ====================
     @filter.command("放生宠物")
-    async def release_pet(self, event: AstrMessageEvent):
+    async def release_pet(self, event: AstrMessageEvent, **kwargs):
         """放生宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -676,7 +676,7 @@ class Main(Star):
 
     # ==================== 命令：训练 ====================
     @filter.command("训练")
-    async def train_pet(self, event: AstrMessageEvent):
+    async def train_pet(self, event: AstrMessageEvent, **kwargs):
         """训练宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -900,7 +900,7 @@ class Main(Star):
 
     # ==================== 命令：进化宠物 ====================
     @filter.command("进化宠物")
-    async def evolve_pet(self, event: AstrMessageEvent):
+    async def evolve_pet(self, event: AstrMessageEvent, **kwargs):
         """进化宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1224,7 +1224,7 @@ class Main(Star):
 
     # ==================== 命令：转账 ====================
     @filter.command("转账")
-    async def transfer(self, event: AstrMessageEvent, amount: int):
+    async def transfer(self, event: AstrMessageEvent, amount: int, **kwargs):
         """转账给其他玩家"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1478,7 +1478,7 @@ class Main(Star):
 
     # ==================== 命令：PK ====================
     @filter.command("PK", alias={"pk", "决斗"})
-    async def pk_battle(self, event: AstrMessageEvent):
+    async def pk_battle(self, event: AstrMessageEvent, **kwargs):
         """宠物决斗"""
         # 私聊检测
         if not event.message_obj.group_id:
@@ -1608,7 +1608,7 @@ class Main(Star):
 
     # ==================== 命令：抢劫 ====================
     @filter.command("抢劫")
-    async def rob(self, event: AstrMessageEvent):
+    async def rob(self, event: AstrMessageEvent, **kwargs):
         """抢劫其他玩家"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
@@ -1732,7 +1732,7 @@ class Main(Star):
             yield event.plain_result("✅ 已清空所有冷却时间。")
 
     @filter.command("管理员发金币")
-    async def admin_give_coins(self, event: AstrMessageEvent, amount: int):
+    async def admin_give_coins(self, event: AstrMessageEvent, amount: int, **kwargs):
         """管理员给指定用户发钱"""
         user_id = str(event.get_sender_id())
         if not self._is_admin(user_id):
