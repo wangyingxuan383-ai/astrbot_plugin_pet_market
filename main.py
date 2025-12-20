@@ -257,6 +257,18 @@ class Main(Star):
         match = re.search(r'(\d{5,11})\s*$', event.message_str)
         return match.group(1) if match else None
 
+    def _extract_amount(self, event: AstrMessageEvent) -> Optional[int]:
+        """从消息中提取金额数字（1-4位数字，避免与QQ号混淆）"""
+        import re
+        # 匹配1-4位数字（金额范围，避免匹配QQ号）
+        match = re.search(r'\b(\d{1,4})\b', event.message_str)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+        return None
+
     async def _fetch_nickname(self, event: AstrMessageEvent, user_id: str) -> str:
         """获取用户昵称（增强版：支持 API 主动获取）"""
         try:
@@ -1229,14 +1241,19 @@ class Main(Star):
 
     # ==================== 命令：转账 ====================
     @filter.command("转账")
-    async def transfer(self, event: AstrMessageEvent, amount: int):
+    async def transfer(self, event: AstrMessageEvent):
         """转账给其他玩家"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
         target_id = self._extract_target(event)
+        amount = self._extract_amount(event)
 
         if not target_id:
             yield event.plain_result("❌ 请使用@或QQ号指定转账目标。")
+            return
+
+        if not amount or amount <= 0:
+            yield event.plain_result("❌ 请指定有效的转账金额。用法: /转账 @用户 金额")
             return
 
         if target_id == user_id:
@@ -1737,7 +1754,7 @@ class Main(Star):
             yield event.plain_result("✅ 已清空所有冷却时间。")
 
     @filter.command("管理员发金币")
-    async def admin_give_coins(self, event: AstrMessageEvent, amount: int):
+    async def admin_give_coins(self, event: AstrMessageEvent):
         """管理员给指定用户发钱"""
         user_id = str(event.get_sender_id())
         if not self._is_admin(user_id):
@@ -1745,12 +1762,14 @@ class Main(Star):
             return
 
         target_id = self._extract_target(event)
+        amount = self._extract_amount(event)
+
         if not target_id:
             yield event.plain_result("❌ 请使用@或QQ号指定用户。")
             return
 
-        if amount <= 0 or amount > 100000:
-            yield event.plain_result("❌ 一次最多 100000 金币。")
+        if not amount or amount <= 0 or amount > 100000:
+            yield event.plain_result("❌ 请指定有效金额（1-100000）。用法: /管理员发金币 @用户 金额")
             return
 
         group_id = str(event.message_obj.group_id)
