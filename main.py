@@ -55,12 +55,12 @@ class Main(Star):
         self.train_copywriting: Dict = {}
         self._dirty = False  # 脏数据标记
         self._save_task: Optional[asyncio.Task] = None
-        
+
         # 使用 StarTools 获取规范的数据目录
         global DATA_DIR, DATA_FILE
         DATA_DIR = StarTools.get_data_dir()
         DATA_FILE = DATA_DIR / "pet_data.yml"
-        
+
         self._init_env()
         self._load_data()
         self._load_copywriting()
@@ -175,27 +175,33 @@ class Main(Star):
     def _get_user_data(self, group_id: str, user_id: str) -> Dict:
         """获取用户数据，自动初始化"""
         group_data = self.pet_data.setdefault(group_id, {})
+
         if user_id in group_data:
             user = group_data[user_id]
             if "loan_amount" not in user:
                 user["loan_amount"] = 0
+            if "loan_principal" not in user:
+                user["loan_principal"] = user.get("loan_amount", 0)  # 默认为当前欠款
+            if "loan_interest_frozen" not in user:
+                user["loan_interest_frozen"] = False
             if "last_loan_interest_time" not in user:
                 user["last_loan_interest_time"] = int(time.time())
 
         if user_id not in group_data:
-            # 首次交互，自动发放初始金币
             group_data[user_id] = {
                 "coins": INITIAL_COINS,
                 "value": 100,
                 "pets": [],
                 "master": "",
                 "nickname": "",
-                "cooldowns": {},  # 统一冷却字典
+                "cooldowns": {},
                 "bank": 0,
                 "bank_level": 1,
                 "last_interest_time": int(time.time()),
-                "loan_amount": 0,  # 欠款总额
-                "last_loan_interest_time": int(time.time()),  # 上次计息时间
+                "loan_amount": 0,  # 总欠款（本金+利息）
+                "loan_principal": 0,  # 本金
+                "loan_interest_frozen": False,  # 坏账利息冻结标记
+                "last_loan_interest_time": int(time.time()),
                 "jailed_until": 0,
                 "last_active": int(time.time()),
                 "initialized": True,
@@ -258,7 +264,7 @@ class Main(Star):
         for comp in event.message_obj.message:
             if isinstance(comp, At):
                 return str(comp.qq)
-        
+
         # 从文字提取QQ号（仅在没有@时使用）
         # 注意：为避免与金额等数字混淆，仅匹配消息末尾的QQ号
         import re
@@ -267,10 +273,10 @@ class Main(Star):
         return match.group(1) if match else None
 
     def _extract_amount(self, event: AstrMessageEvent) -> Optional[int]:
-        """从消息中提取金额数字（1-4位数字，避免与QQ号混淆）"""
+        """从消息中提取金额数字"""
         import re
-        # 匹配1-4位数字（金额范围，避免匹配QQ号）
-        match = re.search(r'\b(\d{1,4})\b', event.message_str)
+        # 将金额上限从4位提升到8位，以支持更大的贷款和转账
+        match = re.search(r'\b(\d{1,8})\b', event.message_str)
         if match:
             try:
                 return int(match.group(1))
@@ -284,14 +290,14 @@ class Main(Star):
             group_id = str(event.message_obj.group_id) if event.message_obj.group_id else None
             if not group_id:
                 return f"用户{user_id[-4:]}"
-            
+
             user_data = self._get_user_data(group_id, user_id)
-            
+
             # 1. 缓存命中（排除默认占位符）
             cached_nickname = user_data.get("nickname", "")
             if cached_nickname and not cached_nickname.startswith("用户"):
                 return cached_nickname
-            
+
             # 2. 发送者本人：从消息事件获取
             if str(event.get_sender_id()) == user_id:
                 sender = event.message_obj.sender
@@ -300,7 +306,7 @@ class Main(Star):
                     user_data["nickname"] = nickname
                     self._save_user_data(group_id, user_id, user_data)
                     return nickname
-            
+
             # 3. 非发送者：尝试通过 API 获取（aiocqhttp 平台）
             if event.get_platform_name() == "aiocqhttp":
                 try:
@@ -320,15 +326,13 @@ class Main(Star):
                             return nickname
                 except Exception as e:
                     logger.debug(f"[宠物市场] API获取昵称失败: {user_id}, {e}")
-            
+
             # 4. 返回默认昵称
             return f"用户{user_id[-4:]}"
-            
+
         except Exception as e:
             logger.error(f"[宠物市场] 获取用户昵称异常: {user_id}, {e}")
             return f"用户{user_id[-4:]}"
-
-
 
     def _get_bank_limit(self, level: int) -> int:
         """获取银行存储上限"""
@@ -385,29 +389,45 @@ class Main(Star):
         final_amount = principal * ((1 + rate) ** hours)
         interest = int(final_amount - principal)
         return interest
-
-    # --- 贷款辅助方法 ---
+    # --- 贷款辅助方法与强制清算逻辑 ---
     def _update_loan_interest(self, user_data: Dict) -> int:
-        """更新用户的贷款利息（修改 user_data 并返回新增利息）"""
-        loan = user_data.get("loan_amount", 0)
-        if loan <= 0:
+        """更新用户的贷款利息（带封顶逻辑）"""
+        loan_total = user_data.get("loan_amount", 0)
+        principal = user_data.get("loan_principal", 0)
+
+        # 如果没有贷款或利息被冻结（坏账），不计算利息
+        if loan_total <= 0 or user_data.get("loan_interest_frozen", False):
             user_data["last_loan_interest_time"] = int(time.time())
+            if loan_total <= 0:
+                user_data["loan_principal"] = 0  # 欠款没了，本金也清零
+                user_data["loan_interest_frozen"] = False
             return 0
 
         rate = self.config.get("loan_interest_rate", 0.05)
+        # 获取利息上限倍率（默认 1.0，即利息最多等于本金）
+        max_multiplier = self.config.get("loan_interest_max_multiplier", 1.0)
+
         last_time = user_data.get("last_loan_interest_time", int(time.time()))
         now = int(time.time())
-
-        # 计算经过的小时数
         hours = (now - last_time) // 3600
 
         if hours >= 1:
-            # 计算复利：新债务 = 旧债务 * (1 + 利率)^小时数
-            new_loan = int(loan * ((1 + rate) ** hours))
-            interest_added = new_loan - loan
+            # 1. 计算理论上的复利后总金额
+            theoretical_loan = int(loan_total * ((1 + rate) ** hours))
 
-            user_data["loan_amount"] = new_loan
-            # 更新时间
+            # 2. 计算封顶金额 = 本金 + 本金*倍率
+            max_loan = int(principal * (1 + max_multiplier))
+
+            # 3. 比较，取较小值
+            if principal > 0:
+                new_loan = min(theoretical_loan, max_loan)
+            else:
+                new_loan = theoretical_loan
+
+            interest_added = new_loan - loan_total
+            if interest_added > 0:
+                user_data["loan_amount"] = new_loan
+
             user_data["last_loan_interest_time"] = now
             return interest_added
 
@@ -417,6 +437,121 @@ class Main(Star):
         """根据银行等级获取贷款额度"""
         per_level = self.config.get("loan_limit_per_level", 5000)
         return level * per_level
+
+    async def _check_and_liquidate(self, event: AstrMessageEvent, group_id: str, user_id: str, user_data: Dict) -> bool:
+        """
+        【新增】检查并执行强制清算 (防老赖机制)
+        Returns: 是否触发了清算
+        """
+        principal = user_data.get("loan_principal", 0)
+        loan = user_data.get("loan_amount", 0)
+        multiplier = self.config.get("loan_interest_max_multiplier", 1.0)
+
+        # 0 表示关闭此功能，或者没贷款
+        if multiplier <= 0 or loan <= 0:
+            return False
+
+        # 如果已经是冻结状态，不再重复清算
+        if user_data.get("loan_interest_frozen", False):
+            return False
+
+        # 爆仓阈值：本金 * (1 + 倍率)
+        threshold = int(principal * (1 + multiplier))
+
+        # 未达到爆仓线
+        if loan < threshold:
+            return False
+
+        # === 触发强制清算 ===
+        log_msg = ["🛑 【银行强制执行通知】"]
+        log_msg.append(f"您的欠款 ({loan}) 已达到本金的 {1 + multiplier} 倍！")
+        log_msg.append("银行依法启动资产强制清算程序...")
+
+        total_repay = 0
+
+        # 1. 现金强制划扣 (低保上限 1000)
+        current_coins = user_data.get("coins", 0)
+        safe_limit = 1000  # 低保上限
+        if current_coins > safe_limit:
+            # 计算可以划扣的金额
+            force_deduct = current_coins - safe_limit
+            # 最多只需要还清欠款
+            actual_deduct = min(force_deduct, loan)
+
+            if actual_deduct > 0:
+                user_data["coins"] -= actual_deduct
+                total_repay += actual_deduct
+                log_msg.append(f"🔻 强制划扣现金（超限部分）：{actual_deduct} 金币")
+
+        # 2. 划扣银行存款
+        remaining_debt_1 = loan - total_repay
+        if remaining_debt_1 > 0:
+            bank_balance = user_data.get("bank", 0)
+            if bank_balance > 0:
+                deduct = min(bank_balance, remaining_debt_1)
+                user_data["bank"] -= deduct
+                total_repay += deduct
+                log_msg.append(f"🔻 划扣银行存款：{deduct} 金币")
+
+        # 3. 变卖宠物 (8折)
+        remaining_debt_2 = loan - total_repay
+        if remaining_debt_2 > 0:
+            pets = user_data.get("pets", [])
+            if pets:
+                sold_count = 0
+                pets_income = 0
+                # 复制列表进行遍历
+                for pet_id in list(pets):
+                    # 如果钱够了就不卖了
+                    if pets_income >= remaining_debt_2:
+                        break
+
+                    pet = self._get_user_data(group_id, pet_id)
+                    market_value = int(pet.get("value", 100) * 0.8)  # 8折
+
+                    pet["master"] = ""  # 解除关系
+                    pets_income += market_value
+                    sold_count += 1
+                    user_data["pets"].remove(pet_id)
+                    self._save_user_data(group_id, pet_id, pet)
+
+                total_repay += pets_income
+                log_msg.append(f"🔻 强制拍卖 {sold_count} 只宠物，获得 {pets_income} 金币")
+
+        # 4. 执行还款
+        user_data["loan_amount"] = max(0, loan - total_repay)
+
+        # 5. 结算状态
+        if user_data["loan_amount"] > 0:
+            # 依然资不抵债
+            user_data["loan_interest_frozen"] = True
+            log_msg.append(f"⚠️ 资产抵扣后仍欠款 {user_data['loan_amount']} 金币。")
+            log_msg.append("❄️ 剩余欠款利息已冻结，不再增加。")
+            log_msg.append("🛡️ 请尽快打工还清剩余债务！")
+        else:
+            # 还清了
+            user_data["loan_principal"] = 0
+            user_data["loan_interest_frozen"] = False
+            remaining_cash = abs(loan - total_repay)  # 如果有剩余 (通常是宠物卖多了)
+            if remaining_cash > 0:
+                user_data["coins"] = user_data.get("coins", 0) + remaining_cash
+                log_msg.append(f"✅ 债务已结清！资产剩余 {remaining_cash} 金币退回余额。")
+            else:
+                log_msg.append(f"✅ 债务已结清！")
+
+        # 6. 低保机制补齐
+        # 防止用户彻底无法翻身
+        current_coins = user_data.get("coins", 0)
+        if current_coins < INITIAL_COINS:
+            subsidy = INITIAL_COINS - current_coins
+            user_data["coins"] = INITIAL_COINS
+            log_msg.append(f"🎁 【失业救济金】发放低保 {subsidy} 金币，助力重新开始。")
+
+        self._save_user_data(group_id, user_id, user_data)
+
+        # 发送通知
+        await event.send(MessageChain([star.Plain("\n".join(log_msg))]))
+        return True
 
     # ==================== 命令：宠物菜单 ====================
     @filter.command("宠物菜单")
@@ -463,7 +598,7 @@ class Main(Star):
             text_menu += "💡 提示：图片菜单生成失败，显示文本版本"
             yield event.plain_result(text_menu)
 
-    # 
+    #
     # ==================== 命令：宠物市场 ====================
     @filter.command("宠物市场")
     async def pet_list(self, event: AstrMessageEvent, page: int = 1):
@@ -472,7 +607,7 @@ class Main(Star):
         if not event.message_obj.group_id:
             yield event.plain_result("❌ 此功能仅限群聊使用。")
             return
-        
+
         group_id = str(event.message_obj.group_id)
         pets = self._get_pets_in_group(group_id)
         if not pets:
@@ -500,10 +635,10 @@ class Main(Star):
                 master_name = await self._fetch_nickname(event, master)
                 status = f"👤 属于{master_name}"
             lines.append(f"[{stage}] {name} | 💰{value} | {status}")
-        
+
         if total_pages > 1:
             lines.append(f"\n💡 发送 /宠物市场 {page + 1 if page < total_pages else 1} 查看其他页")
-        
+
         yield event.plain_result("\n".join(lines))
 
     # ==================== 命令：购买宠物 ====================
@@ -657,11 +792,11 @@ class Main(Star):
             target_data = self._get_user_data(group_id, target_id)
             target_name = target_data.get("nickname") or await self._fetch_nickname(event, target_id)
             pet_value = target_data.get("value", 100)
-            
+
             # 返还30%价值给主人
             refund = int(pet_value * 0.3)
             user_data["coins"] = user_data.get("coins", 0) + refund
-            
+
             user_data["pets"].remove(target_id)
             target_data["master"] = ""
             self._set_cooldown(user_data, "release")
@@ -692,7 +827,7 @@ class Main(Star):
             user_data = self._get_user_data(group_id, user_id)
             cooldown_seconds = self.config.get("work_cooldown", 3600)
             in_cooldown, remain = self._check_cooldown(user_data, "work", cooldown_seconds)
-            
+
             if in_cooldown:
                 mins = remain // 60
                 secs = remain % 60
@@ -765,7 +900,7 @@ class Main(Star):
                 pet = self._get_user_data(group_id, target_id)
                 cooldown_seconds = self.config.get("train_cooldown", 86400)
                 in_cooldown, remain = self._check_cooldown(pet, "train", cooldown_seconds)
-                
+
                 if in_cooldown:
                     hours = remain // 3600
                     mins = (remain % 3600) // 60
@@ -778,7 +913,7 @@ class Main(Star):
                     return
 
                 user_data["coins"] -= cost
-                
+
                 # 获取进化加成
                 stage = pet.get("evolution_stage", "普通")
                 _, train_bonus = self._get_evolution_bonuses(stage)
@@ -831,7 +966,7 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user_data = self._get_user_data(group_id, user_id)
             master_id = user_data.get("master", "")
-            
+
             if not master_id:
                 yield event.plain_result("❌ 你是自由之身，无需赎身。")
                 return
@@ -850,7 +985,7 @@ class Main(Star):
 
             # 解除主从关系
             user_data["master"] = ""
-            
+
             # 设置保护期（24小时）
             protection_hours = self.config.get("ransom_protection_hours", 24)
             user_data["protection_until"] = int(time.time()) + (protection_hours * 3600)
@@ -860,7 +995,7 @@ class Main(Star):
 
             user_name = user_data.get("nickname") or await self._fetch_nickname(event, user_id)
             master_name = master_data.get("nickname") or await self._fetch_nickname(event, master_id)
-            
+
             yield event.plain_result(
                 f"🎉 赎身成功！{user_name} 重获自由！\n"
                 f"💰 支付 {pet_value} 金币给 {master_name}\n"
@@ -886,7 +1021,7 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user_data = self._get_user_data(group_id, user_id)
             pets = user_data.get("pets", [])
-            
+
             if not pets:
                 yield event.plain_result("❌ 你还没有宠物，无法训练。")
                 return
@@ -902,7 +1037,7 @@ class Main(Star):
                 pet = self._get_user_data(group_id, pet_id)
                 cooldown_seconds = self.config.get("train_cooldown", 86400)
                 in_cooldown, _ = self._check_cooldown(pet, "train", cooldown_seconds)
-                
+
                 if in_cooldown:
                     cooldown_count += 1
                     continue
@@ -914,14 +1049,14 @@ class Main(Star):
 
                 user_data["coins"] -= cost
                 total_cost += cost
-                
+
                 # 获取进化加成
                 stage = pet.get("evolution_stage", "普通")
                 _, train_bonus = self._get_evolution_bonuses(stage)
                 success_rate = self.config.get("train_success_rate", 0.7) + train_bonus
 
                 name = pet.get("nickname") or await self._fetch_nickname(event, pet_id)
-                
+
                 if random.random() < success_rate:
                     # 训练成功
                     base_increase = random.randint(15, 35)
@@ -951,12 +1086,11 @@ class Main(Star):
             summary += f"💰 总消耗：{total_cost} 金币\n"
             summary += f"💵 当前余额：{user_data['coins']} 金币\n\n"
             summary += "\n".join(results[:10])  # 只显示前10条
-            
+
             if len(results) > 10:
                 summary += f"\n... 还有 {len(results) - 10} 只宠物"
-            
-            yield event.plain_result(summary)
 
+            yield event.plain_result(summary)
 
     # ==================== 命令：进化宠物 ====================
     @filter.command("进化宠物")
@@ -1029,8 +1163,8 @@ class Main(Star):
                     yield event.plain_result(
                         f"🎉 进化成功！{name} 进化到 [{next_stage}] 阶段！\n"
                         f"💰 消耗 {cost} 金币\n"
-                        f"📈 打工收益 +{int(work_bonus*100)}%\n"
-                        f"📈 训练成功率 +{int(train_bonus*100)}%\n"
+                        f"📈 打工收益 +{int(work_bonus * 100)}%\n"
+                        f"📈 训练成功率 +{int(train_bonus * 100)}%\n"
                         f"💵 当前余额：{user_data['coins']} 金币"
                     )
                 else:
@@ -1047,65 +1181,107 @@ class Main(Star):
                         f"💵 当前余额：{user_data['coins']} 金币"
                     )
 
-
     # ==================== 命令：我的宠物 ====================
     @filter.command("我的宠物")
     async def my_pets(self, event: AstrMessageEvent):
-        """查看自己的宠物"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
-        user = self._get_user_data(group_id, user_id)
-        pets = user.get("pets", [])
-        lines = ["【🐾 我的宠物】"]
-        
-        if not pets:
-            lines.append("你还没有宠物。")
-        else:
-            for pid in pets:
-                pet = self._get_user_data(group_id, pid)
-                name = pet.get("nickname") or await self._fetch_nickname(event, pid)
-                value = pet.get("value", 100)
-                stage = pet.get("evolution_stage", "普通")
-                lines.append(f"[{stage}] {name} | 💰 身价：{value}")
-        
-        coins = user.get("coins", 0)
-        bank = user.get("bank", 0)
-        bank_level = user.get("bank_level", 1)
-        lines.append(f"\n💵 当前余额：{coins} 金币")
-        lines.append(f"🏦 银行存款：{bank} 金币 (Lv.{bank_level})")
-        lines.append(f"💎 总资产：{coins + bank} 金币")
-        
-        yield event.plain_result("\n".join(lines))
+
+        # 加入锁机制以检测爆仓
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+
+            # 更新利息并检查强制清算
+            self._update_loan_interest(user)
+            if await self._check_and_liquidate(event, group_id, user_id, user):
+                return
+
+            self._save_user_data(group_id, user_id, user)
+
+            pets = user.get("pets", [])
+            lines = ["【🐾 我的宠物】"]
+
+            if not pets:
+                lines.append("你还没有宠物。")
+            else:
+                for pid in pets:
+                    pet = self._get_user_data(group_id, pid)
+                    name = pet.get("nickname") or await self._fetch_nickname(event, pid)
+                    value = pet.get("value", 100)
+                    stage = pet.get("evolution_stage", "普通")
+                    lines.append(f"[{stage}] {name} | 💰 身价：{value}")
+
+            coins = user.get("coins", 0)
+            bank = user.get("bank", 0)
+            bank_level = user.get("bank_level", 1)
+            loan = user.get("loan_amount", 0)
+
+            lines.append(f"\n💵 当前余额：{coins} 金币")
+            lines.append(f"🏦 银行存款：{bank} 金币 (Lv.{bank_level})")
+            if loan > 0:
+                lines.append(f"💸 银行欠款：{loan} 金币")
+                if user.get("loan_interest_frozen", False):
+                    lines.append(f"❄️ (利息已冻结)")
+
+            lines.append(f"💎 总资产：{coins + bank - loan} 金币")
+
+            yield event.plain_result("\n".join(lines))
 
     # ==================== 命令：银行信息 ====================
     @filter.command("银行信息")
     async def bank_info(self, event: AstrMessageEvent):
-        """查看银行信息"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
-        user = self._get_user_data(group_id, user_id)
-        
-        bank = user.get("bank", 0)
-        level = user.get("bank_level", 1)
-        limit = self._get_bank_limit(level)
-        rate = self.config.get("bank_interest_rate", 0.01)
-        next_cost = self._get_upgrade_cost(level)
-        
-        # 计算当前可领取利息
-        last_interest = user.get("last_interest_time", int(time.time()))
-        now = int(time.time())
-        hours = min((now - last_interest) // 3600, self.config.get("bank_max_interest_time", 24))
-        potential_interest = self._calculate_compound_interest(bank, rate, hours) if bank > 0 else 0
-        
-        yield event.plain_result(
-            f"【🏦 银行信息】\n"
-            f"💰 当前存款：{bank} 金币\n"
-            f"⭐ 信用等级：Lv.{level}\n"
-            f"📦 存储上限：{limit} 金币\n"
-            f"📈 每小时利息：{rate * 100}%（复利）\n"
-            f"💵 可领利息：{potential_interest} 金币\n"
-            f"⬆️ 下次升级费用：{next_cost} 金币"
-        )
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+
+            self._update_loan_interest(user)
+            if await self._check_and_liquidate(event, group_id, user_id, user):
+                return
+
+            self._save_user_data(group_id, user_id, user)
+
+            bank = user.get("bank", 0)
+            level = user.get("bank_level", 1)
+            limit = self._get_bank_limit(level)
+            rate = self.config.get("bank_interest_rate", 0.01)
+            next_cost = self._get_upgrade_cost(level)
+
+            last_interest = user.get("last_interest_time", int(time.time()))
+            now = int(time.time())
+            hours = min((now - last_interest) // 3600, self.config.get("bank_max_interest_time", 24))
+            potential_interest = self._calculate_compound_interest(bank, rate, hours) if bank > 0 else 0
+
+            loan = user.get("loan_amount", 0)
+
+            message = (
+                f"【🏦 银行信息】\n"
+                f"💰 当前存款：{bank} 金币\n"
+                f"⭐ 信用等级：Lv.{level}\n"
+                f"📦 存储上限：{limit} 金币\n"
+                f"📈 每小时利息：{rate * 100}%（复利）\n"
+                f"💵 可领利息：{potential_interest} 金币\n"
+                f"⬆️ 下次升级费用：{next_cost} 金币"
+            )
+
+            if loan > 0:
+                principal = user.get("loan_principal", 0)
+                loan_limit = self._get_loan_limit(level)
+                loan_rate = self.config.get("loan_interest_rate", 0.05)
+                loan_info = (
+                    f"\n----------------------\n"
+                    f"【💸 贷款详情】\n"
+                    f"当前欠款：{loan} / {loan_limit} 金币\n"
+                    f"  (其中本金: {principal})"
+                )
+                if user.get("loan_interest_frozen", False):
+                    loan_info += "\n❄️ 状态：坏账，利息已冻结"
+                else:
+                    loan_info += f"\n📉 贷款利率：{loan_rate * 100}%/小时"
+                message += loan_info
+
+            yield event.plain_result(message)
 
     # ==================== 命令：升级信用 ====================
     @filter.command("升级信用")
@@ -1126,16 +1302,16 @@ class Main(Star):
             user = self._get_user_data(group_id, user_id)
             level = user.get("bank_level", 1)
             cost = self._get_upgrade_cost(level)
-            
+
             if user.get("coins", 0) < cost:
                 yield event.plain_result(f"❌ 升级需要 {cost} 金币，你的余额不足。")
                 return
-            
+
             user["coins"] -= cost
             user["bank_level"] = level + 1
             self._save_user_data(group_id, user_id, user)
             new_limit = self._get_bank_limit(user["bank_level"])
-            
+
             yield event.plain_result(
                 f"✅ 升级成功！信用等级提升至 Lv.{user['bank_level']}\n"
                 f"📦 新存储上限：{new_limit} 金币\n"
@@ -1167,27 +1343,27 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
             bank = user.get("bank", 0)
-            
+
             if bank == 0:
                 yield event.plain_result("❌ 你没有银行存款，无法领取利息。")
                 return
-            
+
             last_interest = user.get("last_interest_time", int(time.time()))
             now = int(time.time())
             max_hours = self.config.get("bank_max_interest_time", 24)
             hours = min((now - last_interest) // 3600, max_hours)
-            
+
             if hours < 1:
                 yield event.plain_result("❌ 暂无利息可领取（至少需要1小时）。")
                 return
-            
+
             rate = self.config.get("bank_interest_rate", 0.01)
             interest = self._calculate_compound_interest(bank, rate, hours)
-            
+
             user["last_interest_time"] = now
             user["coins"] = user.get("coins", 0) + interest
             self._save_user_data(group_id, user_id, user)
-            
+
             yield event.plain_result(
                 f"✅ 成功领取利息 {interest} 金币到余额。\n"
                 f"⏰ 计息时长：{hours} 小时\n"
@@ -1216,16 +1392,16 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
-            
+
             if user.get("coins", 0) < amount:
                 yield event.plain_result("❌ 现金不足。")
                 return
-            
+
             # 检查银行容量
             level = user.get("bank_level", 1)
             limit = self._get_bank_limit(level)
             current_bank = user.get("bank", 0)
-            
+
             if current_bank + amount > limit:
                 available = limit - current_bank
                 yield event.plain_result(
@@ -1234,11 +1410,11 @@ class Main(Star):
                     f"提示：可使用 /升级信用 提升存储上限。"
                 )
                 return
-            
+
             user["coins"] -= amount
             user["bank"] = current_bank + amount
             self._save_user_data(group_id, user_id, user)
-            
+
             yield event.plain_result(
                 f"✅ 存款成功！存入 {amount} 金币。\n"
                 f"💵 当前余额：{user['coins']} 金币\n"
@@ -1267,15 +1443,15 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
-            
+
             if user.get("bank", 0) < amount:
                 yield event.plain_result("❌ 银行存款不足。")
                 return
-            
+
             user["bank"] -= amount
             user["coins"] = user.get("coins", 0) + amount
             self._save_user_data(group_id, user_id, user)
-            
+
             yield event.plain_result(
                 f"✅ 取款成功！取出 {amount} 金币。\n"
                 f"💵 当前余额：{user['coins']} 金币\n"
@@ -1284,56 +1460,48 @@ class Main(Star):
 
     # ==================== 命令：贷款 ====================
     @filter.command("贷款")
-    async def take_loan(self, event: AstrMessageEvent, amount: int):
+    async def take_loan(self, event: AstrMessageEvent):  # 【修改】移除 amount: int 参数
         """向银行贷款"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
 
-        if amount <= 0:
-            yield event.plain_result("❌ 贷款金额必须大于 0。")
+        # 【新增】手动提取金额并进行校验
+        amount = self._extract_amount(event)
+        if not amount or amount <= 0:
+            yield event.plain_result("❌ 请指定有效的贷款金额。用法: /贷款 500")
             return
 
-        # 检查监狱状态
         jailed, remain = self._check_jailed(group_id, user_id)
         if jailed:
-            hours = remain // 3600
-            mins = (remain % 3600) // 60
             yield event.plain_result(f"🔒 你在监狱中，银行拒绝了你的贷款申请。")
             return
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
 
-            # 1. 先结算之前的利息
-            added_interest = self._update_loan_interest(user)
+            self._update_loan_interest(user)
 
-            # 2. 计算额度
+            if await self._check_and_liquidate(event, group_id, user_id, user):
+                return
+
             level = user.get("bank_level", 1)
             limit = self._get_loan_limit(level)
             current_loan = user.get("loan_amount", 0)
 
-            # 3. 检查是否超额
             if current_loan + amount > limit:
                 can_borrow = max(0, limit - current_loan)
-                msg = f"❌ 贷款被拒绝！你的信用额度不足。\n"
-                if added_interest > 0:
-                    msg += f"📉 刚刚产生了 {added_interest} 金币的利息。\n"
-                msg += f"当前欠款：{current_loan}\n"
-                msg += f"信用额度：{limit}\n"
-                msg += f"剩余可贷：{can_borrow}"
-                self._save_user_data(group_id, user_id, user)  # 保存利息更新
-                yield event.plain_result(msg)
+                yield event.plain_result(f"❌ 信用额度不足！上限 {limit}，剩余可贷 {can_borrow}。")
+                self._save_user_data(group_id, user_id, user)
                 return
 
-            # 4. 执行贷款
             user["loan_amount"] = current_loan + amount
             user["coins"] = user.get("coins", 0) + amount
+            user["loan_principal"] = user.get("loan_principal", 0) + amount
+
             self._save_user_data(group_id, user_id, user)
 
             msg = f"✅ 贷款成功！获得 {amount} 金币。\n"
-            if added_interest > 0:
-                msg += f"📉 (包含结算此前产生的 {added_interest} 利息)\n"
-            msg += f"💸 当前欠款：{user['loan_amount']} 金币\n"
+            msg += f"💸 当前欠款：{user['loan_amount']} (本金 {user['loan_principal']})\n"
             msg += f"💵 当前余额：{user['coins']} 金币\n"
             msg += "⚠️ 请按时还款，利息按小时复利计算！"
 
@@ -1346,7 +1514,6 @@ class Main(Star):
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
 
-        # 检查监狱状态
         jailed, remain = self._check_jailed(group_id, user_id)
         if jailed:
             yield event.plain_result(f"🔒 监狱里无法办理银行业务。")
@@ -1355,18 +1522,24 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
 
-            # 1. 先结算利息
-            added_interest = self._update_loan_interest(user)
+            # 1. 结算利息
+            self._update_loan_interest(user)
+
+            # 2. 【新增】检查强制清算
+            if await self._check_and_liquidate(event, group_id, user_id, user):
+                return
+
             current_loan = user.get("loan_amount", 0)
+            principal = user.get("loan_principal", 0)
 
             if current_loan <= 0:
                 yield event.plain_result("✅ 你当前没有欠款，无债一身轻！")
+                user["loan_principal"] = 0
+                user["loan_interest_frozen"] = False
                 self._save_user_data(group_id, user_id, user)
                 return
 
             user_coins = user.get("coins", 0)
-
-            # 确定还款金额
             target_amount = amount if amount is not None else current_loan
             if target_amount <= 0:
                 yield event.plain_result("❌ 还款金额必须大于 0。")
@@ -1375,27 +1548,29 @@ class Main(Star):
             real_repay = min(target_amount, current_loan)
 
             if user_coins < real_repay:
-                msg = f"❌ 余额不足！\n"
-                msg += f"你需要还款：{real_repay} 金币\n"
-                msg += f"当前余额：{user_coins} 金币"
+                yield event.plain_result(f"❌ 余额不足！需还 {real_repay}，余额 {user_coins}。")
                 self._save_user_data(group_id, user_id, user)
-                yield event.plain_result(msg)
                 return
 
             # 执行还款
             user["coins"] -= real_repay
             user["loan_amount"] -= real_repay
 
-            # 如果还清了，重置计息时间
+            # 更新本金
+            # 逻辑：只要当前的欠款少于记录的本金，说明利息已经还完了，开始还本金了
+            if user["loan_amount"] < principal:
+                user["loan_principal"] = user["loan_amount"]
+
+            # 如果还清了
             if user["loan_amount"] <= 0:
                 user["loan_amount"] = 0
+                user["loan_principal"] = 0
+                user["loan_interest_frozen"] = False  # 解除冻结
 
             self._save_user_data(group_id, user_id, user)
 
             msg = f"✅ 还款成功！支付 {real_repay} 金币。\n"
-            if added_interest > 0:
-                msg += f"📉 (包含结算此前产生的 {added_interest} 利息)\n"
-            msg += f"💸 剩余欠款：{user['loan_amount']} 金币\n"
+            msg += f"💸 剩余欠款：{user['loan_amount']} (本金 {user['loan_principal']})\n"
             msg += f"💵 当前余额：{user['coins']} 金币"
 
             yield event.plain_result(msg)
@@ -1466,7 +1641,7 @@ class Main(Star):
                     yield event.plain_result(
                         f"❌ 金币不足。\n"
                         f"转账金额：{amount}\n"
-                        f"手续费：{fee} ({int(fee_rate*100)}%)\n"
+                        f"手续费：{fee} ({int(fee_rate * 100)}%)\n"
                         f"总计需要：{total_cost} 金币"
                     )
                     return
@@ -1492,10 +1667,10 @@ class Main(Star):
                     "fee": 0,
                     "timestamp": timestamp
                 }
-                
+
                 user_data.setdefault("transfer_history", []).insert(0, user_transfer)
                 target_data.setdefault("transfer_history", []).insert(0, target_transfer)
-                
+
                 # 保留最近20条记录
                 user_data["transfer_history"] = user_data["transfer_history"][:20]
                 target_data["transfer_history"] = target_data["transfer_history"][:20]
@@ -1504,14 +1679,14 @@ class Main(Star):
                 self._save_user_data(group_id, target_id, target_data)
 
                 user_name = user_data.get("nickname") or await self._fetch_nickname(event, user_id)
-                
+
                 target_name = target_data.get("nickname") or await self._fetch_nickname(event, target_id)
 
                 yield event.plain_result(
                     f"✅ 转账成功！\n"
                     f"💸 从 {user_name} 转给 {target_name}\n"
                     f"💰 转账金额：{amount} 金币\n"
-                    f"💵 手续费：{fee} 金币 ({int(fee_rate*100)}%)\n"
+                    f"💵 手续费：{fee} 金币 ({int(fee_rate * 100)}%)\n"
                     f"📊 你的余额：{user_data['coins']} 金币\n"
                     f"📊 对方余额：{target_data['coins']} 金币"
                 )
@@ -1523,12 +1698,12 @@ class Main(Star):
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
         user = self._get_user_data(group_id, user_id)
-        
+
         history = user.get("transfer_history", [])
         if not history:
             yield event.plain_result("❌ 暂无转账记录。")
             return
-        
+
         lines = ["【💸 转账记录】（最近10条）"]
         for i, record in enumerate(history[:10], 1):
             record_type = record.get("type")
@@ -1536,18 +1711,18 @@ class Main(Star):
             amount = record.get("amount", 0)
             fee = record.get("fee", 0)
             timestamp = record.get("timestamp", 0)
-            
+
             # 格式化时间
             dt = datetime.fromtimestamp(timestamp)
             time_str = dt.strftime("%m-%d %H:%M")
-            
+
             target_name = await self._fetch_nickname(event, target_id)
-            
+
             if record_type == "send":
                 lines.append(f"{i}. [{time_str}] 转出 {amount} 给 {target_name}（手续费{fee}）")
             else:
                 lines.append(f"{i}. [{time_str}] 收到 {amount} 来自 {target_name}")
-        
+
         yield event.plain_result("\n".join(lines))
 
     # ==================== 命令：宠物身价排行榜 ====================
@@ -1556,13 +1731,13 @@ class Main(Star):
         """查看宠物身价排行榜（支持分页）"""
         group_id = str(event.message_obj.group_id)
         pets = self._get_pets_in_group(group_id)
-        
+
         if not pets:
             yield event.plain_result("本群暂无宠物数据。")
             return
-        
+
         ranked = sorted(pets.items(), key=lambda x: x[1].get("value", 100), reverse=True)
-        
+
         # 分页逻辑
         page_size = 10
         total = len(ranked)
@@ -1570,19 +1745,19 @@ class Main(Star):
         page = max(1, min(page, total_pages))
         start = (page - 1) * page_size
         end = start + page_size
-        
+
         lines = [f"【💎 宠物身价排行榜】第 {page}/{total_pages} 页"]
-        
+
         for i, (uid, data) in enumerate(ranked[start:end], start + 1):
             name = data.get("nickname") or await self._fetch_nickname(event, uid)
             value = data.get("value", 100)
             stage = data.get("evolution_stage", "普通")
-            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
             lines.append(f"{medal} [{stage}] {name} - {value} 金币")
-        
+
         if total_pages > 1:
             lines.append(f"\n💡 发送 /宠物身价排行榜 {page + 1 if page < total_pages else 1} 查看其他页")
-        
+
         yield event.plain_result("\n".join(lines))
 
     # ==================== 命令：宠物资金排行榜 ====================
@@ -1591,13 +1766,13 @@ class Main(Star):
         """查看宠物资金排行榜（支持分页）"""
         group_id = str(event.message_obj.group_id)
         pets = self._get_pets_in_group(group_id)
-        
+
         if not pets:
             yield event.plain_result("本群暂无宠物数据。")
             return
-        
+
         ranked = sorted(pets.items(), key=lambda x: x[1].get("coins", 0), reverse=True)
-        
+
         # 分页逻辑
         page_size = 10
         total = len(ranked)
@@ -1605,18 +1780,18 @@ class Main(Star):
         page = max(1, min(page, total_pages))
         start = (page - 1) * page_size
         end = start + page_size
-        
+
         lines = [f"【💰 宠物资金排行榜】第 {page}/{total_pages} 页"]
-        
+
         for i, (uid, data) in enumerate(ranked[start:end], start + 1):
             name = data.get("nickname") or await self._fetch_nickname(event, uid)
             coins = data.get("coins", 0)
-            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
             lines.append(f"{medal} {name} - {coins} 金币")
-        
+
         if total_pages > 1:
             lines.append(f"\n💡 发送 /宠物资金排行榜 {page + 1 if page < total_pages else 1} 查看其他页")
-        
+
         yield event.plain_result("\n".join(lines))
 
     # ==================== 命令：群内十大首富 ====================
@@ -1625,17 +1800,17 @@ class Main(Star):
         """查看总资产排行榜（支持分页）"""
         group_id = str(event.message_obj.group_id)
         pets = self._get_pets_in_group(group_id)
-        
+
         if not pets:
             yield event.plain_result("本群暂无宠物数据。")
             return
-        
+
         ranked = sorted(
-            pets.items(), 
-            key=lambda x: x[1].get("coins", 0) + x[1].get("bank", 0), 
+            pets.items(),
+            key=lambda x: x[1].get("coins", 0) + x[1].get("bank", 0),
             reverse=True
         )
-        
+
         # 分页逻辑
         page_size = 10
         total = len(ranked)
@@ -1643,20 +1818,20 @@ class Main(Star):
         page = max(1, min(page, total_pages))
         start = (page - 1) * page_size
         end = start + page_size
-        
+
         lines = [f"【👑 群内十大首富】第 {page}/{total_pages} 页"]
-        
+
         for i, (uid, data) in enumerate(ranked[start:end], start + 1):
             name = data.get("nickname") or await self._fetch_nickname(event, uid)
             coins = data.get("coins", 0)
             bank = data.get("bank", 0)
             total_assets = coins + bank
-            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
             lines.append(f"{medal} {name} - {total_assets} 金币（余额{coins}+存款{bank}）")
-        
+
         if total_pages > 1:
             lines.append(f"\n💡 发送 /群内十大首富 {page + 1 if page < total_pages else 1} 查看其他页")
-        
+
         yield event.plain_result("\n".join(lines))
 
     # ==================== 命令：PK ====================
@@ -1667,7 +1842,7 @@ class Main(Star):
         if not event.message_obj.group_id:
             yield event.plain_result("❌ 此功能仅限群聊使用。")
             return
-        
+
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
         target_id = self._extract_target(event)
@@ -1698,11 +1873,11 @@ class Main(Star):
                 # 检查双方是否都有宠物
                 user_pets = user_data.get("pets", [])
                 target_pets = target_data.get("pets", [])
-                
+
                 if not user_pets:
                     yield event.plain_result("❌ 你还没有宠物，无法参与决斗。")
                     return
-                
+
                 if not target_pets:
                     target_name = target_data.get("nickname") or await self._fetch_nickname(event, target_id)
                     yield event.plain_result(f"❌ {target_name} 还没有宠物，无法挑战。")
@@ -1719,13 +1894,13 @@ class Main(Star):
                 # 获取双方最强宠物（身价最高的）
                 user_pet_id = max(user_pets, key=lambda pid: self._get_user_data(group_id, pid).get("value", 100))
                 target_pet_id = max(target_pets, key=lambda pid: self._get_user_data(group_id, pid).get("value", 100))
-                
+
                 user_pet = self._get_user_data(group_id, user_pet_id)
                 target_pet = self._get_user_data(group_id, target_pet_id)
-                
+
                 user_pet_name = user_pet.get("nickname") or await self._fetch_nickname(event, user_pet_id)
                 target_pet_name = target_pet.get("nickname") or await self._fetch_nickname(event, target_pet_id)
-                
+
                 user_pet_value = user_pet.get("value", 100)
                 target_pet_value = target_pet.get("value", 100)
                 user_pet_stage = user_pet.get("evolution_stage", "普通")
@@ -1745,16 +1920,16 @@ class Main(Star):
                     prize = int(target_pet_value * 0.1)
                     user_pet["value"] += prize
                     target_pet["value"] = max(100, target_pet["value"] - prize)
-                    
+
                     # 更新进化阶段
                     user_pet["evolution_stage"] = self._get_evolution_stage(user_pet["value"])
                     target_pet["evolution_stage"] = self._get_evolution_stage(target_pet["value"])
-                    
+
                     self._save_user_data(group_id, user_id, user_data)
                     self._save_user_data(group_id, target_id, target_data)
                     self._save_user_data(group_id, user_pet_id, user_pet)
                     self._save_user_data(group_id, target_pet_id, target_pet)
-                    
+
                     yield event.plain_result(
                         f"⚔️ 【PK 决斗】\n"
                         f"你的 [{user_pet_stage}]{user_pet_name}（{user_pet_value}）发起挑战！\n"
@@ -1769,16 +1944,16 @@ class Main(Star):
                     loss = int(user_pet_value * 0.1)
                     target_pet["value"] += loss
                     user_pet["value"] = max(100, user_pet["value"] - loss)
-                    
+
                     # 更新进化阶段
                     user_pet["evolution_stage"] = self._get_evolution_stage(user_pet["value"])
                     target_pet["evolution_stage"] = self._get_evolution_stage(target_pet["value"])
-                    
+
                     self._save_user_data(group_id, user_id, user_data)
                     self._save_user_data(group_id, target_id, target_data)
                     self._save_user_data(group_id, user_pet_id, user_pet)
                     self._save_user_data(group_id, target_pet_id, target_pet)
-                    
+
                     yield event.plain_result(
                         f"⚔️ 【PK 决斗】\n"
                         f"你的 [{user_pet_stage}]{user_pet_name}（{user_pet_value}）发起挑战！\n"
@@ -1850,10 +2025,10 @@ class Main(Star):
                     user_data["coins"] = user_data.get("coins", 0) + amount
                     self._save_user_data(group_id, user_id, user_data)
                     self._save_user_data(group_id, target_id, target_data)
-                    
+
                     yield event.plain_result(
                         f"💰 抢劫成功！{user_name} 从 {target_name} 手中抢走 {amount} 金币。\n"
-                        f"🎲 成功率：{int(success_rate*100)}%\n"
+                        f"🎲 成功率：{int(success_rate * 100)}%\n"
                         f"💵 当前余额：{user_data['coins']} 金币"
                     )
                 else:
@@ -1862,12 +2037,12 @@ class Main(Star):
                     user_data["coins"] = max(0, user_data["coins"] - penalty)
                     user_data["jailed_until"] = int(time.time()) + 86400  # 禁言1天
                     self._save_user_data(group_id, user_id, user_data)
-                    
+
                     yield event.plain_result(
                         f"🚨 抢劫失败！{user_name} 被送入监狱！\n"
                         f"💸 扣除 {penalty} 金币作为罚款\n"
                         f"🔒 24小时内无法使用任何指令\n"
-                        f"🎲 成功率：{int(success_rate*100)}%\n"
+                        f"🎲 成功率：{int(success_rate * 100)}%\n"
                         f"💵 当前余额：{user_data['coins']} 金币"
                     )
 
@@ -1952,11 +2127,11 @@ class Main(Star):
         group_id = str(event.message_obj.group_id)
         pets = self._get_pets_in_group(group_id)
         removed = len(pets)
-        
+
         self.pet_data[group_id] = {}
         self._dirty = True
         self._save_data()  # 立即保存
-        
+
         yield event.plain_result(f"✅ 已清空本群所有数据，共 {removed} 条。")
 
     @filter.command("释放监狱")

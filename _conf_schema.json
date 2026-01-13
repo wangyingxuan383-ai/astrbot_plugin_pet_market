@@ -68,6 +68,12 @@
     "default": 5000,
     "hint": "总额度 = 信用等级 * 此数值"
   },
+  "loan_interest_max_multiplier": {
+    "type": "float",
+    "description": "强制清算倍率（当欠款达到 本金*(1+倍率) 时触发）",
+    "default": 1.0,
+    "hint": "1.0表示欠款翻倍（利息=本金）时触发强制抵押。设置为 0 则关闭自动抵押功能。"
+  },
   "transfer_fee_rate": {
     "type": "float",
     "description": "转账手续费率（0~1）",
