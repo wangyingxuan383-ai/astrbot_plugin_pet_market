@@ -56,6 +56,24 @@
     "default": 24,
     "hint": "例如：24 表示最多累计24小时利息"
   },
+  "loan_interest_rate": {
+    "type": "float",
+    "description": "银行贷款每小时利息率（复利）",
+    "default": 0.05,
+    "hint": "例如：0.05 表示 5%，高利贷警告！"
+  },
+  "loan_limit_per_level": {
+    "type": "int",
+    "description": "每级信用等级提供的贷款额度",
+    "default": 5000,
+    "hint": "总额度 = 信用等级 * 此数值"
+  },
+  "loan_interest_max_multiplier": {
+    "type": "float",
+    "description": "强制清算倍率（当欠款达到 本金*(1+倍率) 时触发）",
+    "default": 1.0,
+    "hint": "1.0表示欠款翻倍（利息=本金）时触发强制抵押。设置为 0 则关闭自动抵押功能。"
+  },
   "transfer_fee_rate": {
     "type": "float",
     "description": "转账手续费率（0~1）",
