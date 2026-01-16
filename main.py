@@ -614,7 +614,11 @@ class Main(Star):
                 if trigger:
                     total_input = investment["amount"] + addon_amount
                     profit_loss = new_value - total_input
-                    messages.append(f"🔔 你的投资触发{trigger}条件！收益: {profit_loss:+d}金币，建议使用 /{trigger}")
+                    # 【改进】消息格式更加清晰，区分盈利和亏损
+                    if profit_loss >= 0:
+                        messages.append(f"🔔 你的投资触发{trigger}条件！收益：{profit_loss:+d}金币，建议使用 /{trigger}")
+                    else:
+                        messages.append(f"🔔 你的投资触发{trigger}条件！亏损：{profit_loss:+d}金币，建议使用 /{trigger}")
                 else:
                     messages.append(f"📊 投资更新：{trend_name} {change_rate:+.2%}，当前价值 {new_value} 金币")
         
@@ -2688,7 +2692,7 @@ class Main(Star):
             msg += f"💵 当前总投资：{total_investment} 金币\n"
             msg += f"💵 当前价值：{investment['current_value']} 金币\n"
             msg += f"💵 当前余额：{user['coins']} 金币\n"
-            msg += f"⏰ 下次结算时应用新趋势"
+            msg += f"⏰ 下次结算时应用加投的收益计算"
 
             yield event.plain_result(msg)
 
@@ -2716,7 +2720,8 @@ class Main(Star):
 
             investment = active_investments[0]
             elapsed = int(time.time()) - investment["start_time"]
-            hours = elapsed // 3600
+            days = elapsed // 86400
+            hours = (elapsed % 86400) // 3600
             mins = (elapsed % 3600) // 60
 
             current_value = investment["current_value"]
@@ -2727,12 +2732,23 @@ class Main(Star):
             # 检查是否触发止盈/止损
             trigger = self._check_investment_trigger(investment)
             
+            # 【修复】投资类型判断应该基于是否有加投
+            addon_amount = investment.get("addon_amount", 0)
+            if addon_amount > 0:
+                investment_type_str = f"主投资({investment['amount']}) + 加投({addon_amount})"
+            else:
+                investment_type_str = f"主投资({investment['amount']})"
+            
             msg = f"【📊 投资状态】\n"
-            msg += f"投资类型：{'主投资' if investment['type'] == 'main' else '加投'}\n"
+            msg += f"投资类型：{investment_type_str}\n"
             msg += f"投入总额：{total_input} 金币\n"
             msg += f"当前价值：{current_value} 金币\n"
             msg += f"收益：{profit:+d} 金币（{profit_rate:+.2%}）\n"
-            msg += f"运行时间：{hours}小时{mins}分钟\n"
+            # 【改进】显示运行时间时包含天数
+            if days > 0:
+                msg += f"运行时间：{days}天{hours}小时{mins}分钟\n"
+            else:
+                msg += f"运行时间：{hours}小时{mins}分钟\n"
             msg += f"\n📈 趋势历史：\n"
             
             for i, (trend, rate) in enumerate(investment["trend_history"][-5:], 1):
