@@ -561,14 +561,14 @@ class Main(Star):
         per_house_limit = self.config.get("pet_per_house", 5)
         return (house_count + rented_bonus) * per_house_limit
 
-    async def _check_and_release_excess_pets(self, group_id: str, user_id: str, event: AstrMessageEvent) -> bool:
+    async def _check_and_release_excess_pets(self, group_id: str, user_id: str, event: AstrMessageEvent):
         """检查是否超过容量限制，如果是，执行强制放生逻辑"""
         user_data = self._get_user_data(group_id, user_id)
         capacity = self._get_pet_capacity(user_data)
         pets = user_data.get("pets", [])
         
         if len(pets) <= capacity:
-            return False
+            return False, None
             
         # 超出容量，开始强制放生
         excess_count = len(pets) - capacity
@@ -617,7 +617,7 @@ class Main(Star):
             f"💰 获得返还：{total_refund} 金币\n"
             f"💡 提示：请使用 /购买公寓 提升容量上限。"
         )
-        yield event.plain_result(msg)
+        return True, event.plain_result(msg)
         return True
 
     async def _fetch_nickname(self, event: AstrMessageEvent, user_id: str) -> str:
@@ -1765,7 +1765,9 @@ class Main(Star):
         # 加入锁机制以检测爆仓
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             # 【新增】检查公寓容量并强制放生
-            if await self._check_and_release_excess_pets(group_id, user_id, event):
+            released, msg = await self._check_and_release_excess_pets(group_id, user_id, event)
+            if released:
+                if msg: yield msg
                 # 如果触发了放生，重新获取数据
                 user = self._get_user_data(group_id, user_id)
             else:
@@ -2906,7 +2908,9 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             # 检查强制放生
-            if await self._check_and_release_excess_pets(group_id, user_id, event):
+            released, msg = await self._check_and_release_excess_pets(group_id, user_id, event)
+            if released:
+                if msg: yield msg
                 user = self._get_user_data(group_id, user_id) # reload
             else:
                 user = self._get_user_data(group_id, user_id)
@@ -3250,6 +3254,18 @@ class Main(Star):
             yield event.plain_result(f"✅ 已释放 {target_name} 出监狱。")
 
     # ==================== 命令：金融市场 ====================
+    @filter.command("金融帮助")
+    async def market_help(self, event: AstrMessageEvent):
+        """查看金融市场操作指南"""
+        lines = ["📊 【金融市场操作指南】",
+                 "/金融市场 - 查看大盘行情",
+                 "/买入 [代码] [金额] - 买入理财产品",
+                 "/卖出 [代码] [全部/金额] - 卖出变现",
+                 "/我的持仓 - 查看持有盈亏",
+                 "",
+                 "💡 提示：投资有风险，入市需谨慎！"]
+        yield event.plain_result("\n".join(lines))
+
     @filter.command("金融市场", alias={"大盘", "股市"})
     async def market_view(self, event: AstrMessageEvent):
         """查看金融市场大盘"""
