@@ -61,6 +61,9 @@ class Main(Star):
         DATA_DIR = StarTools.get_data_dir()
         DATA_FILE = DATA_DIR / "pet_data.yml"
 
+        # 【新增】初始化管理员列表
+        self.admins = self._init_admins()
+
         self._init_env()
         self._load_data()
         self._load_copywriting()
@@ -214,8 +217,10 @@ class Main(Star):
                 "evolution_stage": "普通",
                 # 【新增】抢劫相关
                 "rob_fail_streak": 0,  # 连败次数
-                "rob_pending_penalty": None  # 待处理的罚款状态
-
+                "rob_pending_penalty": None,  # 待处理的罚款状态
+                # 【新增】投资相关
+                "investments": [],  # 投资列表 [{id, type, amount, start_time, status, current_value, trend_history}]
+                "next_investment_id": 1  # 投资ID生成器
             }
             self._dirty = True
             logger.info(f"[宠物市场] 新用户 {user_id} 初始化，发放 {INITIAL_COINS} 金币")
@@ -443,6 +448,123 @@ class Main(Star):
 
         return 0
 
+    # --- 投资相关辅助方法 ---
+    def _get_investment_trend(self) -> Tuple[int, float]:
+        """
+        生成投资趋势
+        主投资分布：1(40%) 2(25%) 3(20%) 4(8%) 5(5%) 6(1.5%) 7(0.5%)
+        加投分布：1(50%) 2(25%) 3(15%) 4(7%) 5(2.5%) 6(0.4%) 7(0.1%)
+        返回：(趋势类型, 涨跌百分比)
+        """
+        rand = random.random() * 100
+        
+        # 趋势分布及其涨跌范围
+        # (概率范围, 趋势名, 涨跌范围)
+        trends = [
+            ((0, 40), "横盘", lambda: random.uniform(-0.02, 0.02)),           # 1
+            ((40, 65), "小涨", lambda: random.uniform(0.03, 0.05)),           # 2
+            ((65, 85), "小跌", lambda: random.uniform(-0.04, -0.03)),         # 3
+            ((85, 93), "中涨", lambda: random.uniform(0.06, 0.09)),           # 4
+            ((93, 98), "中跌", lambda: random.uniform(-0.091, -0.05)),        # 5
+            ((98, 99.5), "极端涨", lambda: random.uniform(0.10, 0.15)),       # 6
+            ((99.5, 100), "极端跌", lambda: random.uniform(-0.18, -0.10)),    # 7
+        ]
+        
+        for (min_p, max_p), name, func in trends:
+            if min_p <= rand < max_p:
+                return (name, func())
+        
+        return ("横盘", random.uniform(-0.02, 0.02))
+
+    def _get_investment_trend_addon(self) -> Tuple[int, float]:
+        """
+        生成加投趋势
+        加投分布：1(50%) 2(25%) 3(15%) 4(7%) 5(2.5%) 6(0.4%) 7(0.1%)
+        """
+        rand = random.random() * 100
+        
+        trends = [
+            ((0, 50), "横盘", lambda: random.uniform(-0.01, 0.01)),           # 1
+            ((50, 75), "小涨", lambda: random.uniform(0.02, 0.04)),           # 2
+            ((75, 90), "小跌", lambda: random.uniform(-0.039, -0.02)),        # 3
+            ((90, 97), "中涨", lambda: random.uniform(0.05, 0.09)),           # 4
+            ((97, 99.5), "中跌", lambda: random.uniform(-0.05, -0.04)),       # 5
+            ((99.5, 99.9), "极端涨", lambda: random.uniform(0.10, 0.12)),     # 6
+            ((99.9, 100), "极端跌", lambda: random.uniform(-0.081, -0.051)),  # 7
+        ]
+        
+        for (min_p, max_p), name, func in trends:
+            if min_p <= rand < max_p:
+                return (name, func())
+        
+        return ("横盘", random.uniform(-0.01, 0.01))
+
+    def _check_investment_trigger(self, investment: Dict) -> Optional[str]:
+        """
+        检查投资是否触发止盈或止损
+        返回：None（无触发） | "止盈" | "止损"
+        """
+        # 【修复】使用总投资额（包含加投）来计算收益率
+        total_input = investment["amount"] + investment.get("addon_amount", 0)
+        if total_input <= 0:
+            return None
+        
+        profit_rate = (investment["current_value"] - total_input) / total_input
+        
+        # 止盈条件：盈利达10%
+        if profit_rate >= 0.10:
+            return "止盈"
+        
+        # 止损条件：亏损达5%
+        if profit_rate <= -0.05:
+            return "止损"
+        
+        return None
+
+    def _settle_investments(self, user_data: Dict) -> List[str]:
+        """
+        自动结算投资趋势变化（每次操作时调用）
+        返回结算信息列表
+        """
+        messages = []
+        investments = user_data.get("investments", [])
+        
+        for investment in investments:
+            if investment.get("status") != "active":
+                continue
+            
+            # 检查是否达到结算时间（每小时结算一次）
+            next_settlement = investment.get("next_settlement_time", 0)
+            now = int(time.time())
+            
+            if now >= next_settlement:
+                # 【修复】根据是否有加投金额来选择趋势函数
+                addon_amount = investment.get("addon_amount", 0)
+                if addon_amount > 0:
+                    # 有加投，使用加投趋势
+                    trend_name, change_rate = self._get_investment_trend_addon()
+                else:
+                    # 纯主投资，使用主投资趋势
+                    trend_name, change_rate = self._get_investment_trend()
+                
+                # 更新投资价值
+                old_value = investment["current_value"]
+                new_value = int(old_value * (1 + change_rate))
+                investment["current_value"] = new_value
+                investment["trend_history"].append((trend_name, change_rate))
+                investment["next_settlement_time"] = now + 3600
+                
+                # 检查触发条件
+                trigger = self._check_investment_trigger(investment)
+                if trigger:
+                    total_input = investment["amount"] + addon_amount
+                    profit_loss = new_value - total_input
+                    messages.append(f"🔔 你的投资触发{trigger}条件！收益: {profit_loss:+d}金币，建议使用 /{trigger}")
+                else:
+                    messages.append(f"📊 投资更新：{trend_name} {change_rate:+.2%}，当前价值 {new_value} 金币")
+        
+        return messages
+
     def _get_loan_limit(self, level: int) -> int:
         """根据银行等级获取贷款额度"""
         per_level = self.config.get("loan_limit_per_level", 5000)
@@ -596,6 +718,11 @@ class Main(Star):
                 {"cmd": "/抢劫 @群友/QQ", "desc": "每小时可抢劫一次"},
                 {"cmd": "/交罚款", "desc": "抢劫失败后缴纳罚款"},
                 {"cmd": "/坐牢", "desc": "抢劫失败后选择坐牢"},
+                {"cmd": "/投资 5000", "desc": "💰 进行主投资（最低5000）"},
+                {"cmd": "/加投 500", "desc": "📈 在现有投资上加投（500-5000）"},
+                {"cmd": "/投资状态", "desc": "查看当前投资状态与收益"},
+                {"cmd": "/止盈", "desc": "主动止盈获取收益"},
+                {"cmd": "/止损", "desc": "主动止损减少亏损"},
             ]
         }
         try:
@@ -896,10 +1023,20 @@ class Main(Star):
                 user_data["coins"] = user_data.get("coins", 0) + total
                 lines.append(f"\n💰 总计获得 {total} 金币")
 
+            # 【新增】检查投资结算
+            investment_msgs = self._settle_investments(user_data)
+            
             self._set_cooldown(user_data, "work")
             self._save_user_data(group_id, user_id, user_data)
 
             lines.append(f"💵 当前余额：{user_data['coins']} 金币")
+            
+            # 添加投资信息
+            if investment_msgs:
+                lines.append("")
+                for msg in investment_msgs:
+                    lines.append(msg)
+            
             yield event.plain_result("\n".join(lines))
 
     # ==================== 【新增】命令：逃跑 ====================
@@ -1399,6 +1536,16 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
+            
+            # 【新增】检查是否有未还清的贷款
+            current_loan = user.get("loan_amount", 0)
+            if current_loan > 0:
+                yield event.plain_result(
+                    f"❌ 你还有 {current_loan} 金币的未清欠款，必须先还清贷款才能升级信用等级！\n"
+                    f"💡 提示：使用 /还款 来偿还贷款。"
+                )
+                return
+            
             level = user.get("bank_level", 1)
             cost = self._get_upgrade_cost(level)
 
@@ -2222,13 +2369,50 @@ class Main(Star):
             yield event.plain_result(f"⛓️ 你选择了坐牢。将在监狱中度过 {jail_hours} 小时。")
 
     # ==================== 管理员命令 ====================
+    def _init_admins(self) -> List[str]:
+        """
+        【新增】初始化管理员列表
+        从配置中获取管理员ID，支持多种配置方式
+        """
+        admins = []
+        
+        # 方式1：从 config 中的 admin_uins 字段获取
+        admin_list = self.config.get("admin_uins", [])
+        if admin_list:
+            for admin_id in admin_list:
+                admin_str = str(admin_id).strip()
+                if admin_str.isdigit():
+                    admins.append(admin_str)
+                    logger.debug(f"[宠物市场] 添加管理员: {admin_str} (来自 admin_uins)")
+        
+        # 方式2：从 context 的全局配置中获取 admins_id
+        try:
+            global_config = self.context.get_config()
+            if global_config and isinstance(global_config, dict):
+                admins_id = global_config.get("admins_id", [])
+                if admins_id:
+                    for admin_id in admins_id:
+                        admin_str = str(admin_id).strip()
+                        if admin_str.isdigit() and admin_str not in admins:
+                            admins.append(admin_str)
+                            logger.debug(f"[宠物市场] 添加管理员: {admin_str} (来自 admins_id)")
+        except Exception as e:
+            logger.warning(f"[宠物市场] 从全局配置获取管理员失败: {e}")
+        
+        # 如果没有配置任何管理员，使用默认管理员
+        if not admins:
+            admins = ["846994183", "3864670906"]
+            logger.info(f"[宠物市场] 使用默认管理员列表: {admins}")
+        else:
+            logger.info(f"[宠物市场] 已加载 {len(admins)} 个管理员: {admins}")
+        
+        return admins
+
     def _is_admin(self, user_id: str) -> bool:
         """检查是否是管理员"""
-        admin_list = self.config.get("admin_uins", [])
-        # 如果配置为空，使用硬编码的默认管理员
-        if not admin_list:
-            admin_list = ["846994183", "3864670906"]
-        return user_id in admin_list
+        user_id = str(user_id).strip()
+        # 使用初始化时加载的管理员列表
+        return user_id in self.admins
 
     @filter.command("我发钱")
     async def give_me_money(self, event: AstrMessageEvent, amount: int):
@@ -2329,3 +2513,252 @@ class Main(Star):
             self._save_user_data(group_id, target_id, target)
             target_name = target.get("nickname") or await self._fetch_nickname(event, target_id)
             yield event.plain_result(f"✅ 已释放 {target_name} 出监狱。")
+
+    # ==================== 命令：投资 ====================
+    @filter.command("投资")
+    async def invest(self, event: AstrMessageEvent):
+        """进行主投资（最低5000）"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        amount = self._extract_amount(event)
+        if not amount or amount < 5000:
+            yield event.plain_result("❌ 投资金额不能少于 5000 金币。用法: /投资 5000")
+            return
+
+        jailed, remain = self._check_jailed(group_id, user_id)
+        if jailed:
+            yield event.plain_result(f"🔒 监狱里无法进行投资。")
+            return
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+
+            # 检查是否有未还清的贷款
+            current_loan = user.get("loan_amount", 0)
+            if current_loan > 0:
+                yield event.plain_result(f"❌ 你还有 {current_loan} 金币的未清欠款，必须先还清贷款才能投资！")
+                return
+
+            if user.get("coins", 0) < amount:
+                yield event.plain_result(f"❌ 余额不足！需投资 {amount}，余额 {user['coins']}。")
+                return
+
+            # 检查是否已有活跃投资
+            active_investments = [inv for inv in user.get("investments", []) if inv.get("status") == "active"]
+            if active_investments:
+                yield event.plain_result("❌ 你已有活跃的投资，请先结算或触发止盈/止损！")
+                return
+
+            # 创建新投资
+            trend_name, change_rate = self._get_investment_trend()
+            investment_id = user.get("next_investment_id", 1)
+            
+            investment = {
+                "id": investment_id,
+                "type": "main",  # 主投资
+                "amount": amount,
+                "start_time": int(time.time()),
+                "status": "active",
+                "current_value": amount,
+                "trend_history": [(trend_name, change_rate)],
+                "addon_amount": 0,  # 加投金额
+                "next_settlement_time": int(time.time()) + 3600  # 1小时后结算
+            }
+
+            user["coins"] -= amount
+            user["investments"].append(investment)
+            user["next_investment_id"] = investment_id + 1
+            self._save_user_data(group_id, user_id, user)
+
+            msg = f"✅ 投资成功！\n"
+            msg += f"💰 投资金额：{amount} 金币\n"
+            msg += f"📈 初始趋势：{trend_name} {change_rate:+.2%}\n"
+            msg += f"💵 当前余额：{user['coins']} 金币\n"
+            msg += f"⏰ 约24小时后可查看收益"
+
+            yield event.plain_result(msg)
+
+    # ==================== 命令：加投 ====================
+    @filter.command("加投")
+    async def add_investment(self, event: AstrMessageEvent):
+        """在现有投资上加投（500-5000）"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        amount = self._extract_amount(event)
+        if not amount or amount < 500 or amount > 5000:
+            yield event.plain_result("❌ 加投金额需在 500-5000 之间。用法: /加投 1000")
+            return
+
+        jailed, remain = self._check_jailed(group_id, user_id)
+        if jailed:
+            yield event.plain_result(f"🔒 监狱里无法进行加投。")
+            return
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+
+            if user.get("coins", 0) < amount:
+                yield event.plain_result(f"❌ 余额不足！需加投 {amount}，余额 {user['coins']}。")
+                return
+
+            # 检查是否有活跃的主投资
+            active_investments = [inv for inv in user.get("investments", []) 
+                                if inv.get("status") == "active" and inv.get("type") == "main"]
+            if not active_investments:
+                yield event.plain_result("❌ 你没有活跃的主投资，无法加投。请先使用 /投资 进行投资。")
+                return
+
+            investment = active_investments[0]
+            
+            # 检查加投总额是否超过5000
+            current_addon = investment.get("addon_amount", 0)
+            if current_addon + amount > 5000:
+                can_add = max(0, 5000 - current_addon)
+                yield event.plain_result(f"❌ 加投超限！已加投 {current_addon}，还可加投 {can_add}。")
+                return
+
+            # 【修复】执行加投 - 不应立即应用趋势，只增加投资金额
+            user["coins"] -= amount
+            investment["addon_amount"] += amount
+            investment["current_value"] += amount  # 只增加投资金额，下次结算时应用趋势
+            # 注意：不应该这里追加趋势历史，应该在结算时追加
+            
+            self._save_user_data(group_id, user_id, user)
+
+            total_investment = investment["amount"] + investment["addon_amount"]
+            msg = f"✅ 加投成功！\n"
+            msg += f"💰 加投金额：{amount} 金币\n"
+            msg += f"💵 当前总投资：{total_investment} 金币\n"
+            msg += f"💵 当前价值：{investment['current_value']} 金币\n"
+            msg += f"💵 当前余额：{user['coins']} 金币\n"
+            msg += f"⏰ 下次结算时应用新趋势"
+
+            yield event.plain_result(msg)
+
+    # ==================== 命令：投资状态 ====================
+    @filter.command("投资状态")
+    async def investment_status(self, event: AstrMessageEvent):
+        """查看当前投资状态与收益"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            investments = user.get("investments", [])
+
+            if not investments:
+                yield event.plain_result("❌ 你还没有任何投资。")
+                return
+
+            # 过滤活跃投资
+            active_investments = [inv for inv in investments if inv.get("status") == "active"]
+            
+            if not active_investments:
+                yield event.plain_result("❌ 你没有活跃的投资。")
+                return
+
+            investment = active_investments[0]
+            elapsed = int(time.time()) - investment["start_time"]
+            hours = elapsed // 3600
+            mins = (elapsed % 3600) // 60
+
+            current_value = investment["current_value"]
+            total_input = investment["amount"] + investment.get("addon_amount", 0)
+            profit = current_value - total_input
+            profit_rate = profit / total_input if total_input > 0 else 0
+
+            # 检查是否触发止盈/止损
+            trigger = self._check_investment_trigger(investment)
+            
+            msg = f"【📊 投资状态】\n"
+            msg += f"投资类型：{'主投资' if investment['type'] == 'main' else '加投'}\n"
+            msg += f"投入总额：{total_input} 金币\n"
+            msg += f"当前价值：{current_value} 金币\n"
+            msg += f"收益：{profit:+d} 金币（{profit_rate:+.2%}）\n"
+            msg += f"运行时间：{hours}小时{mins}分钟\n"
+            msg += f"\n📈 趋势历史：\n"
+            
+            for i, (trend, rate) in enumerate(investment["trend_history"][-5:], 1):
+                msg += f"  {i}. {trend} {rate:+.2%}\n"
+
+            if trigger:
+                msg += f"\n🔔 触发条件：{trigger}\n"
+                msg += f"💡 可使用 /{trigger} 来执行操作"
+
+            yield event.plain_result(msg)
+
+    # ==================== 命令：止盈 ====================
+    @filter.command("止盈")
+    async def take_profit(self, event: AstrMessageEvent):
+        """主动止盈获取收益"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            
+            # 检查是否有活跃投资
+            active_investments = [inv for inv in user.get("investments", []) if inv.get("status") == "active"]
+            if not active_investments:
+                yield event.plain_result("❌ 你没有活跃的投资。")
+                return
+
+            investment = active_investments[0]
+            current_value = investment["current_value"]
+            total_input = investment["amount"] + investment.get("addon_amount", 0)
+            profit = current_value - total_input
+
+            # 执行止盈
+            user["coins"] += current_value
+            investment["status"] = "closed"
+            investment["profit"] = profit
+            investment["close_time"] = int(time.time())
+            investment["close_reason"] = "止盈"
+
+            self._save_user_data(group_id, user_id, user)
+
+            msg = f"✅ 止盈成功！\n"
+            msg += f"💰 收回资金：{current_value} 金币\n"
+            msg += f"📈 本次收益：{profit:+d} 金币（{profit/total_input if total_input > 0 else 0:+.2%}）\n"
+            msg += f"💵 当前余额：{user['coins']} 金币"
+
+            yield event.plain_result(msg)
+
+    # ==================== 命令：止损 ====================
+    @filter.command("止损")
+    async def stop_loss(self, event: AstrMessageEvent):
+        """主动止损减少亏损"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            
+            # 检查是否有活跃投资
+            active_investments = [inv for inv in user.get("investments", []) if inv.get("status") == "active"]
+            if not active_investments:
+                yield event.plain_result("❌ 你没有活跃的投资。")
+                return
+
+            investment = active_investments[0]
+            current_value = investment["current_value"]
+            total_input = investment["amount"] + investment.get("addon_amount", 0)
+            loss = current_value - total_input
+
+            # 执行止损
+            user["coins"] += current_value
+            investment["status"] = "closed"
+            investment["loss"] = loss
+            investment["close_time"] = int(time.time())
+            investment["close_reason"] = "止损"
+
+            self._save_user_data(group_id, user_id, user)
+
+            msg = f"✅ 止损成功！\n"
+            msg += f"💰 收回资金：{current_value} 金币\n"
+            msg += f"📉 本次亏损：{loss:+d} 金币（{loss/total_input if total_input > 0 else 0:.2%}）\n"
+            msg += f"💵 当前余额：{user['coins']} 金币"
+
+            yield event.plain_result(msg)
