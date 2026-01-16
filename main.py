@@ -54,9 +54,28 @@ EVOLUTION_COSTS = {
 SHOP_ITEMS = {
     "101": {"name": "精力药水", "price": 500, "desc": "立即清除打工和训练的冷却时间", "icon": "🧪"},
     "102": {"name": "护身符", "price": 2000, "desc": "自动抵挡一次抢劫（生效后消耗）", "icon": "🧿"},
-    "103": {"name": "越狱卡", "price": 5000, "desc": "在监狱中使用，立即重获自由", "icon": "💳"},
-    "104": {"name": "刮刮乐", "price": 100, "desc": "有机会获得 0-500 金币", "icon": "🎟️"},
+    "104": {"name": "初级刮刮乐", "price": 200, "desc": "小赌怡情，最高奖 2000 金币", "icon": "🎫",
+            "type": "scratch_card", 
+            "awards": [
+                {"name": "谢谢惠顾", "prob": 0.45, "amount": 0},
+                {"name": "安慰奖", "prob": 0.20, "amount": 20},
+                {"name": "回本奖", "prob": 0.15, "amount": 100},
+                {"name": "小赚一比", "prob": 0.10, "amount": 200},
+                {"name": "运气不错", "prob": 0.08, "amount": 500},
+                {"name": "手气爆棚", "prob": 0.018, "amount": 1000},
+                {"name": "天选之子", "prob": 0.002, "amount": 2000},
+            ]},
     "105": {"name": "宠物零食", "price": 300, "desc": "给宠物喂食，随机增加 20-50 身价", "icon": "🦴"},
+    "106": {"name": "高级刮刮乐", "price": 1000, "desc": "玩的就是心跳，最高奖 10000 金币", "icon": "🎫",
+             "type": "scratch_card",
+             "awards": [
+                 {"name": "谢谢惠顾", "prob": 0.50, "amount": 0},
+                 {"name": "安慰奖", "prob": 0.20, "amount": 100},
+                 {"name": "回本奖", "prob": 0.15, "amount": 500},
+                 {"name": "小赚一比", "prob": 0.10, "amount": 1200},
+                 {"name": "财神附体", "prob": 0.04, "amount": 3000},
+                 {"name": "超级大奖", "prob": 0.01, "amount": 10000},
+             ]},
 }
 
 
@@ -1026,6 +1045,7 @@ class Main(Star):
                 {"cmd": "/租房", "desc": "📅 租借临时公寓(+5容量/7天)"},
                 {"cmd": "/我的公寓", "desc": "🏘️ 查看所有公寓及入住情况"},
                 {"cmd": "/宠物签到", "desc": "📅 每日签到领工资"},
+                {"cmd": "/福利彩票 [机选/号码]", "desc": "🎰 双色球彩票，以小博大"},
                 {"cmd": "/商店", "desc": "🛒 购买道具增强体验"},
                 {"cmd": "/购买道具 [ID]", "desc": "💳 购买指定道具"},
                 {"cmd": "/我的背包", "desc": "🎒 查看和使用道具"},
@@ -3014,43 +3034,75 @@ class Main(Star):
 
     @filter.command("购买道具")
     async def buy_item(self, event: AstrMessageEvent):
-        """购买商店道具"""
+        """购买商店道具，支持批量：/购买道具 [ID] *数量"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
         
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("❌ 用法: /购买道具 [道具ID]")
+            yield event.plain_result("❌ 用法: /购买道具 [道具ID] [*数量]")
             return
             
-        item_id = args[1]
+        # 解析 ID 和 数量
+        item_id = None
+        count = 1
         
-        if item_id not in SHOP_ITEMS:
+        # 简单解析逻辑：尝试从参数中分离数量
+        raw_args = args[1:]
+        # 寻找像 *10 这样的参数
+        target_count_idx = -1
+        for idx, arg in enumerate(raw_args):
+            if arg.startswith('*') and arg[1:].isdigit():
+                count = int(arg[1:])
+                target_count_idx = idx
+                break
+            elif arg.isdigit() and idx > 0: # 如果是纯数字且不是第一个参数，也可能是数量
+                count = int(arg)
+                target_count_idx = idx
+                break
+        
+        if target_count_idx != -1:
+            # 移除了数量参数，剩下的是 ID
+            item_id_list = raw_args[:target_count_idx] + raw_args[target_count_idx+1:]
+            if item_id_list: item_id = item_id_list[0]
+        else:
+            item_id = raw_args[0]
+        
+        if not item_id or item_id not in SHOP_ITEMS:
             yield event.plain_result("❌ 商品不存在，请检查ID。")
+            return
+            
+        if count <= 0:
+            yield event.plain_result("❌ 购买数量必须大于0。")
+            return
+        
+        if count > 100:
+            yield event.plain_result("❌ 单次购买上限 100 个。")
             return
             
         item = SHOP_ITEMS[item_id]
         price = item["price"]
+        total_price = price * count
         
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
             
-            if user.get("coins", 0) < price:
-                yield event.plain_result(f"❌ 余额不足！需要 {price} 金币。")
+            if user.get("coins", 0) < total_price:
+                yield event.plain_result(f"❌ 余额不足！购买 {count} 个 {item['name']} 需要 {total_price} 金币。")
                 return
                 
-            user["coins"] -= price
+            user["coins"] -= total_price
             
             # 由于没有复杂的背包系统，简单用字典计数
             inventory = user.setdefault("inventory", {})
-            inventory[item_id] = inventory.get(item_id, 0) + 1
+            inventory[item_id] = inventory.get(item_id, 0) + count
             
             self._save_user_data(group_id, user_id, user)
             
             yield event.plain_result(
                 f"🎉 购买成功！\n"
-                f"获得：{item['icon']} {item['name']} x1\n"
-                f"花费：{price} 金币\n"
+                f"获得：{item['icon']} {item['name']} x{count}\n"
+                f"花费：{total_price} 金币\n"
                 f"当前余额：{user['coins']} 金币"
             )
 
@@ -3081,23 +3133,42 @@ class Main(Star):
 
     @filter.command("使用道具")
     async def use_item(self, event: AstrMessageEvent):
-        """使用背包中的道具"""
+        """使用背包中的道具，支持批量：/使用道具 [ID] *数量"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
         
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("❌ 用法: /使用道具 [道具ID]")
+            yield event.plain_result("❌ 用法: /使用道具 [道具ID] [*数量]")
             return
             
-        item_id = args[1]
+        # 解析 ID 和 数量 (复用逻辑)
+        item_id = None
+        count = 1
+        raw_args = args[1:]
+        target_count_idx = -1
+        for idx, arg in enumerate(raw_args):
+            if arg.startswith('*') and arg[1:].isdigit():
+                count = int(arg[1:])
+                target_count_idx = idx
+                break
+            elif arg.isdigit() and idx > 0:
+                count = int(arg)
+                target_count_idx = idx
+                break
+        
+        if target_count_idx != -1:
+            item_id_list = raw_args[:target_count_idx] + raw_args[target_count_idx+1:]
+            if item_id_list: item_id = item_id_list[0]
+        else:
+            item_id = raw_args[0]
         
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
             inventory = user.get("inventory", {})
             
-            if inventory.get(item_id, 0) <= 0:
-                yield event.plain_result("❌ 你没有该道具。")
+            if inventory.get(item_id, 0) < count:
+                yield event.plain_result(f"❌ 数量不足！你只有 {inventory.get(item_id, 0)} 个。")
                 return
                 
             item = SHOP_ITEMS.get(item_id)
@@ -3109,53 +3180,84 @@ class Main(Star):
             msg = ""
             consumed = True
             
-            if item_id == "101": # 精力药水
-                user["cooldowns"] = {}
-                msg = "🧪 精力焕发！所有冷却时间已重置！"
+            # ========== 刮刮乐逻辑 (支持批量) ==========
+            if item.get("type") == "scratch_card":
+                total_win = 0
+                win_details = {} # 改为记录获得各个奖项的次数
+                
+                awards = item.get("awards", [])
+                
+                # 预计算概率区间，提高效率
+                # awards: [{"prob": 0.4, ...}, ...]
+                
+                for _ in range(count):
+                    r = random.random()
+                    cumulative = 0.0
+                    prize = 0
+                    prize_name = "谢谢惠顾"
+                    
+                    for award in awards:
+                        cumulative += award["prob"]
+                        if r < cumulative:
+                            prize = award["amount"]
+                            prize_name = award["name"]
+                            break
+                    
+                    total_win += prize
+                    win_details[prize_name] = win_details.get(prize_name, 0) + 1
+                    
+                user["coins"] += total_win
+                
+                # 构建结果消息
+                msg = f"🎰 连续刮开了 {count} 张 {item['name']} ...\n"
+                msg += f"💰 总计获得：{total_win} 金币\n"
+                msg += "📊 获奖统计：\n"
+
+                # 按照奖项金额排序展示
+                sorted_details = sorted(win_details.items(), key=lambda x: next((a['amount'] for a in awards if a['name'] == x[0]), 0), reverse=True)
+                
+                for name, num in sorted_details:
+                    amount = next((a['amount'] for a in awards if a['name'] == name), 0)
+                    msg += f"   - {name}({amount}): {num}次\n"
+            
+            # ========== 其他道具 (通常不支持批量使用，或者循环执行) ==========
+            elif item_id == "101": # 精力药水
+                if count > 1:
+                   msg = "❌ 此道具一次只能使用 1 个。"
+                   consumed = False
+                else:
+                    user["cooldowns"] = {}
+                    msg = "🧪 精力焕发！所有冷却时间已重置！"
                 
             elif item_id == "102": # 护身符
-                msg = "🧿 护身符已装备！将自动抵挡下一次抢劫。(无需手动使用，放在背包即可生效)"
-                consumed = False # 手动使用不消耗，只是提示
-                
-            elif item_id == "103": # 越狱卡
-                jailed, _ = self._check_jailed(group_id, user_id)
-                if not jailed:
-                    msg = "❌ 你现在是自由身，无需越狱。"
-                    consumed = False
-                else:
-                    user["jailed_until"] = 0
-                    msg = "💳 越狱成功！重获自由！"
-                    
-            elif item_id == "104": # 刮刮乐
-                bonus = random.randint(0, 500)
-                user["coins"] += bonus
-                msg = f"🎟️ 刮开了彩票... 获得了 {bonus} 金币！"
+                msg = f"🧿 护身符无需主动使用，放在背包自动生效。(当前库存: {inventory.get(item_id)} 个)"
+                consumed = False 
                 
             elif item_id == "105": # 宠物零食
+                # 零食可以批量喂
                 pets = user.get("pets", [])
                 if not pets:
                     msg = "❌ 你没有宠物可以喂食。"
                     consumed = False
                 else:
-                    target_pet_id = pets[0] # 默认喂第一只，或者扩展参数指定
-                    # 尝试解析参数指定宠物
-                    if len(args) > 2:
-                         # 简单的尝试匹配
-                         pass 
-                    
+                    target_pet_id = pets[0] 
                     pet_data = self._get_user_data(group_id, target_pet_id)
-                    increase = random.randint(20, 50)
-                    pet_data["value"] += increase
+                    
+                    total_increase = 0
+                    for _ in range(count):
+                        total_increase += random.randint(20, 50)
+                        
+                    pet_data["value"] += total_increase
                     pet_name = pet_data.get("nickname") or f"宠物{target_pet_id}"
                     self._save_user_data(group_id, target_pet_id, pet_data)
-                    msg = f"🦴 给 {pet_name} 喂了零食，身价增加 {increase}！"
+                    msg = f"🦴 给 {pet_name} 喂了 {count} 份零食，身价共增加 {total_increase}！"
             
             else:
                 msg = "❌ 该道具无法主动使用。"
                 consumed = False
 
             if consumed:
-                inventory[item_id] -= 1
+                inventory[item_id] -= count
                 if inventory[item_id] <= 0:
                     del inventory[item_id]
                 self._save_user_data(group_id, user_id, user)
@@ -3191,7 +3293,7 @@ class Main(Star):
             
             msg = f"✅ 签到成功！\n💰 获得金币：{coins}"
             
-            # 20% 概率额外获得道具
+            # 20% 概率额外获得道具 (随机选一个)
             if random.random() < 0.2:
                 item_id = random.choice(list(SHOP_ITEMS.keys()))
                 item = SHOP_ITEMS[item_id]
@@ -3201,6 +3303,177 @@ class Main(Star):
                 
             self._save_user_data(group_id, user_id, user)
             yield event.plain_result(msg)
+
+    # ==================== 命令：福利彩票（双色球） ====================
+    @filter.command("福利彩票", alias={"彩票", "双色球"})
+    async def welfare_lottery(self, event: AstrMessageEvent):
+        """双色球彩票：红球1-33选6，蓝球1-16选1"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+        
+        args = event.message_str.split()
+        
+        help_msg = (
+            "🎰 【福利彩票】玩法说明\n"
+            "------------------\n"
+            "规则：6个红球(1-33) + 1个蓝球(1-16)\n"
+            "售价：200 金币/注\n"
+            "指令：\n"
+            "1. 机选：/福利彩票 机选 [注数]\n"
+            "2. 自选：/福利彩票 1 5 10 15 20 25 8 (最后一位是蓝球)\n"
+            "------------------\n"
+            "🏆 奖级赔率（即买即开）：\n"
+            "一等奖 (6+1): 10000倍 (200万)\n"
+            "二等奖 (6+0): 1000倍 (20万)\n"
+            "三等奖 (5+1): 150倍 (3万)\n"
+            "四等奖 (5+0, 4+1): 10倍 (2000)\n"
+            "五等奖 (4+0, 3+1): 5倍 (1000)\n"
+            "六等奖 (1+1, 2+1, 0+1): 3倍 (600)\n" # 保本微赚
+        )
+        
+        if len(args) < 2:
+            yield event.plain_result(help_msg)
+            return
+
+        # 获取购买参数
+        buy_mode = "manual"
+        numbers = []
+        count = 1
+        
+        if args[1] == "机选":
+            buy_mode = "auto"
+            if len(args) > 2 and args[2].isdigit():
+                count = int(args[2])
+                if count < 1 or count > 50:
+                    yield event.plain_result("❌ 单次机选最多 50 注。")
+                    return
+        else:
+            # 解析自选号码
+            try:
+                nums = [int(x) for x in args[1:] if x.isdigit()]
+                if len(nums) != 7:
+                    yield event.plain_result("❌ 自选号码必须是 7 个数字（6红+1蓝）。")
+                    return
+                
+                reds = nums[:6]
+                blue = nums[6]
+                
+                if len(set(reds)) != 6:
+                    yield event.plain_result("❌ 红球号码不能重复。")
+                    return
+                
+                if any(r < 1 or r > 33 for r in reds) or (blue < 1 or blue > 16):
+                    yield event.plain_result("❌ 号码范围错误：红球1-33，蓝球1-16。")
+                    return
+                    
+                numbers = [sorted(reds), blue]
+                count = 1 # 自选目前只支持1注
+                
+            except ValueError:
+                yield event.plain_result(help_msg)
+                return
+
+        price = 200
+        total_cost = price * count
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            if user.get("coins", 0) < total_cost:
+                yield event.plain_result(f"❌ 余额不足！需要 {total_cost} 金币。")
+                return
+            
+            user["coins"] -= total_cost
+            
+            results = [] # 记录每一注的结果
+            total_prize = 0
+            
+            # 开奖逻辑
+            # 为了公平，每一注都独立开奖一次（即时开奖模式）
+            # 生成中奖号码
+            def generate_win_num():
+                win_reds = sorted(random.sample(range(1, 34), 6))
+                win_blue = random.randint(1, 17)
+                return win_reds, win_blue
+                
+            win_reds_final, win_blue_final = generate_win_num()
+            
+            # 如果是机选，生成用户号码
+            user_bets = []
+            if buy_mode == "auto":
+                for _ in range(count):
+                    r_bets = sorted(random.sample(range(1, 34), 6))
+                    b_bet = random.randint(1, 17)
+                    user_bets.append((r_bets, b_bet))
+            else:
+                user_bets.append((numbers[0], numbers[1]))
+                
+            # 统计结果
+            win_detail = {} # 统计各奖级数量
+            
+            for u_reds, u_blue in user_bets:
+                # 匹配红球
+                hit_red = len(set(u_reds) & set(win_reds_final))
+                # 匹配蓝球
+                hit_blue = 1 if u_blue == win_blue_final else 0
+                
+                prize_mult = 0
+                rank_name = "未中奖"
+                
+                if hit_red == 6 and hit_blue == 1:
+                    prize_mult = 10000
+                    rank_name = "一等奖"
+                elif hit_red == 6:
+                    prize_mult = 1000
+                    rank_name = "二等奖"
+                elif hit_red == 5 and hit_blue == 1:
+                    prize_mult = 150
+                    rank_name = "三等奖"
+                elif (hit_red == 5) or (hit_red == 4 and hit_blue == 1):
+                    prize_mult = 10
+                    rank_name = "四等奖"
+                elif (hit_red == 4) or (hit_red == 3 and hit_blue == 1):
+                    prize_mult = 5
+                    rank_name = "五等奖"
+                elif hit_blue == 1: # 只要蓝球中就算六等奖
+                    prize_mult = 3
+                    rank_name = "六等奖"
+                    
+                award = price * prize_mult
+                total_prize += award
+                
+                if award > 0:
+                    win_detail[rank_name] = win_detail.get(rank_name, 0) + 1
+            
+            user["coins"] += total_prize
+            self._save_user_data(group_id, user_id, user)
+            
+            # 构建回复
+            msg = [
+                f"🎰 【福利彩票开奖】 (花费 {total_cost})",
+                f"🔴 本期红球：{win_reds_final}",
+                f"🔵 本期蓝球：{win_blue_final}",
+                "-" * 20
+            ]
+            
+            if count == 1:
+                # 单注显示详细匹配
+                 u_r, u_b = user_bets[0]
+                 msg.append(f"你的号码：{u_r} + {u_b}")
+                 if total_prize > 0:
+                     msg.append(f"🎉 恭喜中奖！获得 {total_prize} 金币！")
+                 else:
+                     msg.append("💔 很遗憾，未能中奖。")
+            else:
+                # 多注显示统计
+                msg.append(f"📊 投注 {count} 注，共中奖 {sum(win_detail.values())} 注")
+                if total_prize > 0:
+                    for k, v in win_detail.items():
+                        msg.append(f"   - {k}: {v} 注")
+                    msg.append(f"💰 总计奖金：{total_prize} 金币")
+                else:
+                    msg.append("💔 全军覆没，本次未中奖。")
+                    
+            yield event.plain_result("\n".join(msg))
 
     @filter.command("管理员发金币")
     async def admin_give_coins(self, event: AstrMessageEvent):
