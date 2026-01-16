@@ -1,4 +1,4 @@
-{
+﻿{
   "admin_uins": {
     "type": "list",
     "items": {
@@ -114,7 +114,7 @@
     "type": "int",
     "description": "赎身后保护时间（小时）",
     "default": 24,
-    "hint": "例如：24 表示 24 小时内不能被购买",
+    "hint": "例如：24 表示 24 小时内不能被购买"
 
   },
   "rob_jail_hours": {

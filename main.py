@@ -4,6 +4,7 @@ import random
 import time
 import json
 import asyncio
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from astrbot.api import star, logger
@@ -12,13 +13,19 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import At
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.session_lock import session_lock_manager
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from concurrent.futures import ThreadPoolExecutor
 
 # ==================== 常量定义 ====================
 PLUGIN_DIR = os.path.dirname(__file__)
-# 数据目录将在 __init__ 中使用 StarTools 初始化
-DATA_DIR = None  # 延迟初始化
-DATA_FILE = None  # 延迟初始化
+PLUGIN_NAME = "astrbot_plugin_pet_market"
+
+# 数据目录将在 __init__ 中使用 get_astrbot_data_path 初始化（符合 astrbot 规范）
+DATA_DIR = None  # 延迟初始化，指向 data/plugin_data/{plugin_name}/
+DATA_FILE = None  # 延迟初始化，指向 data/plugin_data/{plugin_name}/pet_data.yml
+BACKUP_DIR = None  # 延迟初始化，数据备份目录
+
+# 文案文件路径（最好也迁移到数据目录）
 COPYWRITING_FILE = os.path.join(PLUGIN_DIR, "resources", "data", "pet_copywriting.json")
 TRAIN_COPYWRITING_FILE = os.path.join(PLUGIN_DIR, "resources", "data", "train_copywriting.json")
 CARD_TEMPLATE = os.path.join(PLUGIN_DIR, "card_template.html")
@@ -46,7 +53,7 @@ EVOLUTION_COSTS = {
 
 # ==================== 主类 ====================
 class Main(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, **kwargs):
         super().__init__(context)
         self.context = context
         self.config = context._config
@@ -56,10 +63,13 @@ class Main(Star):
         self._dirty = False  # 脏数据标记
         self._save_task: Optional[asyncio.Task] = None
 
-        # 使用 StarTools 获取规范的数据目录
-        global DATA_DIR, DATA_FILE
-        DATA_DIR = StarTools.get_data_dir()
+        # 【规范化】使用 get_astrbot_data_path 获取标准数据目录
+        # 符合 astrbot 规范：data/plugin_data/{plugin_name}/
+        global DATA_DIR, DATA_FILE, BACKUP_DIR
+        plugin_data_path = Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
+        DATA_DIR = plugin_data_path
         DATA_FILE = DATA_DIR / "pet_data.yml"
+        BACKUP_DIR = DATA_DIR / "backups"
 
         # 【新增】初始化管理员列表
         self.admins = self._init_admins()
@@ -105,30 +115,75 @@ class Main(Star):
 
     # ==================== 数据管理 ====================
     def _init_env(self):
-        """初始化环境"""
-        os.makedirs(DATA_DIR, exist_ok=True)
-        if not os.path.exists(DATA_FILE):
+        """初始化环境（确保目录存在，不会被更新清除）"""
+        # 创建插件数据目录
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # 创建备份目录
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # 如果数据文件不存在则创建空数据文件
+        if not DATA_FILE.exists():
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 yaml.dump({}, f)
+            logger.info(f"[宠物市场] 数据文件已初始化：{DATA_FILE}")
+        else:
+            logger.debug(f"[宠物市场] 数据文件已存在：{DATA_FILE}")
 
     def _load_data(self):
-        """加载数据"""
+        """加载数据（带错误恢复机制）"""
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                self.pet_data = yaml.safe_load(f) or {}
-            logger.info(f"[宠物市场] 数据加载成功，共 {len(self.pet_data)} 个群组")
+                data = yaml.safe_load(f)
+                self.pet_data = data if isinstance(data, dict) else {}
+            logger.info(f"[宠物市场] 数据加载成功，共 {len(self.pet_data)} 个群组，路径：{DATA_FILE}")
         except Exception as e:
-            logger.error(f"[宠物市场] 数据加载失败: {e}")
+            logger.error(f"[宠物市场] 数据加载失败: {e}，尝试恢复备份...")
+            self._try_restore_backup()
             self.pet_data = {}
 
     def _save_data(self):
-        """保存数据到文件（同步版本，供异步调用）"""
+        """保存数据到文件（同步版本，含备份机制）"""
         try:
+            # 1. 如果旧文件存在，先备份
+            if DATA_FILE.exists():
+                backup_file = BACKUP_DIR / f"pet_data_{int(time.time())}.yml"
+                import shutil
+                shutil.copy2(DATA_FILE, backup_file)
+                logger.debug(f"[宠物市场] 数据备份：{backup_file}")
+            
+            # 2. 写入新数据
             with open(DATA_FILE, "w", encoding="utf-8") as f:
-                yaml.dump(self.pet_data, f, allow_unicode=True)
-            logger.debug("[宠物市场] 数据保存成功")
+                yaml.dump(self.pet_data, f, allow_unicode=True, default_flow_style=False)
+            logger.debug(f"[宠物市场] 数据保存成功：{DATA_FILE}")
         except Exception as e:
             logger.error(f"[宠物市场] 数据保存失败: {e}")
+
+    def _try_restore_backup(self):
+        """尝试从最新备份恢复数据"""
+        try:
+            if not BACKUP_DIR.exists():
+                logger.warning("[宠物市场] 备份目录不存在，无法恢复")
+                return False
+            
+            # 找最新的备份文件
+            backup_files = sorted(BACKUP_DIR.glob("pet_data_*.yml"), key=lambda x: x.stat().st_mtime, reverse=True)
+            if not backup_files:
+                logger.warning("[宠物市场] 未找到备份文件")
+                return False
+            
+            latest_backup = backup_files[0]
+            logger.info(f"[宠物市场] 正在从备份恢复：{latest_backup}")
+            
+            with open(latest_backup, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                self.pet_data = data if isinstance(data, dict) else {}
+            
+            logger.warning(f"[宠物市场] 数据已从备份恢复，共 {len(self.pet_data)} 个群组")
+            return True
+        except Exception as e:
+            logger.error(f"[宠物市场] 备份恢复失败: {e}")
+            return False
 
     async def _save_data_async(self):
         """异步保存数据（使用线程池避免阻塞）"""
@@ -141,8 +196,8 @@ class Main(Star):
         """写入数据文件（在线程池中执行）"""
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as f:
-                yaml.dump(data, f, allow_unicode=True)
-            logger.debug("[宠物市场] 数据异步保存成功")
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+            logger.debug(f"[宠物市场] 数据异步保存成功：{DATA_FILE}")
         except Exception as e:
             logger.error(f"[宠物市场] 数据保存失败: {e}")
 
