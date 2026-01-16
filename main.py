@@ -51,6 +51,166 @@ EVOLUTION_COSTS = {
 }
 
 
+# ==================== 市场管理器 ====================
+class MarketManager:
+    def __init__(self, data_file: Path):
+        self.data_file = data_file
+        self.market_data = {
+            "last_update": 0,
+            "instruments": {}
+        }
+        self.default_instruments = {
+            # 基金（稳健型 - 波动极小）
+            "F101": {"name": "国债逆回购", "type": "fund", "base_price": 1.0, "volatility": 0.001, "desc": "几乎无风险，收益如止水", "drift": 0.00005},
+            "F102": {"name": "稳健债基A", "type": "fund", "base_price": 1.1, "volatility": 0.002, "desc": "主投债券，稳稳的幸福", "drift": 0.00008},
+            "F103": {"name": "沪深300ETF", "type": "fund", "base_price": 3.5, "volatility": 0.010, "desc": "跟随大盘，长期投资首选", "drift": 0.00012},
+            "F104": {"name": "纳指科技基", "type": "fund", "base_price": 2.8, "volatility": 0.015, "desc": "聚焦海外科技，波动稍大", "drift": 0.00015},
+
+            # 股票（平衡型 - 波动适中）
+            # 科技/半导体板块
+            "S201": {"name": "橘猫科技", "type": "stock", "base_price": 25.0, "volatility": 0.12, "desc": "互联网巨头，业绩优良", "drift": 0.0001},
+            "S202": {"name": "汪汪半导体", "type": "stock", "base_price": 45.0, "volatility": 0.18, "desc": "国产芯片之光，受周期影响", "drift": 0.0},
+            # 消费/医药板块
+            "S203": {"name": "锦鲤酒业", "type": "stock", "base_price": 120.0, "volatility": 0.08, "desc": "高端酱香型，永远的神", "drift": 0.0001},
+            "S204": {"name": "治愈生物", "type": "stock", "base_price": 30.0, "volatility": 0.10, "desc": "创新药企，研发风险较高", "drift": 0.0},
+            # 工业/能源板块
+            "S205": {"name": "阿柴重工", "type": "stock", "base_price": 12.0, "volatility": 0.06, "desc": "基建狂魔，低估值高分红", "drift": 0.0},
+            "S206": {"name": "二哈新能源", "type": "stock", "base_price": 18.0, "volatility": 0.15, "desc": "光伏锂电，大起大落", "drift": 0.0},
+            # 传媒/AI板块
+            "S207": {"name": "幻影传媒", "type": "stock", "base_price": 9.0, "volatility": 0.20, "desc": "短剧游戏概念，妖股体质", "drift": 0.0},
+
+            # 虚拟币（激进型 - 波动剧烈）
+            "C301": {"name": "比特币 BTC", "type": "crypto", "base_price": 60000.0, "volatility": 0.25, "desc": "数字黄金，相对抗跌", "drift": 0.0003},
+            "C302": {"name": "以太坊 ETH", "type": "crypto", "base_price": 3000.0, "volatility": 0.30, "desc": "智能合约之王，应用广泛", "drift": 0.0003},
+            "C303": {"name": "狗狗币 DOGE", "type": "crypto", "base_price": 0.2, "volatility": 0.45, "desc": "Meme币鼻祖，马斯克带货", "drift": 0.0},
+            "C304": {"name": "笑脸币 SLILE", "type": "crypto", "base_price": 0.01, "volatility": 0.80, "desc": "土狗项目，归零或百倍", "drift": 0.0},
+        }
+        self._load_market()
+
+    def _load_market(self):
+        if self.data_file.exists():
+            try:
+                with open(self.data_file, "r", encoding="utf-8") as f:
+                    saved_data = json.load(f)
+                    self.market_data.update(saved_data)
+                    # Merge new instruments if any
+                    for code, info in self.default_instruments.items():
+                        if code not in self.market_data["instruments"]:
+                            self._init_instrument(code, info)
+            except Exception as e:
+                logger.error(f"加载市场数据失败: {e}")
+                self._init_market()
+        else:
+            self._init_market()
+
+    def _init_market(self):
+        self.market_data["last_update"] = int(time.time())
+        self.market_data["instruments"] = {}
+        for code, info in self.default_instruments.items():
+            self._init_instrument(code, info)
+        self.save_market()
+
+    def _init_instrument(self, code, info):
+        self.market_data["instruments"][code] = {
+            "name": info["name"],
+            "type": info["type"],
+            "current_price": info["base_price"],
+            "price_history": [info["base_price"]] * 10,
+            "change_24h": 0.0,
+            "desc": info["desc"]
+        }
+
+    def save_market(self):
+        try:
+            with open(self.data_file, "w", encoding="utf-8") as f:
+                json.dump(self.market_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存市场数据失败: {e}")
+
+    def update_market(self):
+        """更新市场价格，模拟真实波动"""
+        instruments = self.market_data["instruments"]
+        
+        for code, data in instruments.items():
+            default = self.default_instruments.get(code, {})
+            volatility = default.get("volatility", 0.05)
+            drift = default.get("drift", 0.0)
+            
+            # 使用几何布朗运动模型简化版 Price(t) = Price(t-1) * e^(drift + sigma * epsilon)
+            # 或者更简单的百分比浮动
+            
+            # 随机波动因子 (-1 到 1 的正态分布 * 波动率)
+            shock = random.gauss(0, 1) * volatility
+            
+            # 趋势项 (基金有微弱上涨趋势)
+            trend = drift
+            
+            # 价格变动
+            change_percent = trend + shock
+            
+            # 限制单次最大涨跌幅，防止通过系统漏洞刷钱，也符合熔断机制
+            max_change = volatility * 2
+            change_percent = max(min(change_percent, max_change), -max_change)
+            
+            old_price = data["current_price"]
+            new_price = old_price * (1 + change_percent)
+            
+            # 防止价格归零，设定最低价
+            new_price = max(0.01, new_price)
+            
+            data["current_price"] = round(new_price, 4)
+            data["price_history"].append(data["current_price"])
+            if len(data["price_history"]) > 30: # 保留最近30次记录
+                data["price_history"].pop(0)
+                
+            # 计算24小时(近似最近10次周期)涨跌幅
+            start_price = data["price_history"][0] if data["price_history"] else new_price
+            data["change_24h"] = (new_price - start_price) / start_price
+
+        self.market_data["last_update"] = int(time.time())
+        self.save_market()
+
+    def get_market_summary(self) -> str:
+        lines = ["📊 【金融市场大盘】"]
+        
+        types = {"fund": "🟢 基金", "stock": "🔴 股票", "crypto": "⚡ 虚拟币"}
+        
+        # 分组展示
+        grouped = {"fund": [], "stock": [], "crypto": []}
+        for code, data in self.market_data["instruments"].items():
+            itype = self.default_instruments.get(code, {}).get("type", "stock")
+            grouped[itype].append((code, data))
+            
+        for itype, label in types.items():
+            if not grouped.get(itype): continue
+            lines.append(f"\n{label}:")
+            for code, data in grouped[itype]:
+                price = data['current_price']
+                change = data['change_24h']
+                icon = "📈" if change >= 0 else "📉"
+                lines.append(f"  [{code}] {data['name']}")
+                lines.append(f"    现价: {price:.4f} | 幅度: {change:+.2%} {icon}")
+        
+        lines.append("\n💡 指令：/买入 [代码] [金额] | /卖出 [代码] [全部/份额]")
+        return "\n".join(lines)
+    
+    def get_instrument(self, code_or_name: str):
+        instruments = self.market_data["instruments"]
+        code_or_name = code_or_name.strip()
+        
+        # Try direct code match (case insensitive)
+        for code, data in instruments.items():
+            if code.lower() == code_or_name.lower():
+                return code, data
+        
+        # Try name partial match
+        for code, data in instruments.items():
+            if code_or_name in data["name"]:
+                return code, data
+                
+        return None, None
+
+
 # ==================== 主类 ====================
 class Main(Star):
     def __init__(self, context: Context, **kwargs):
@@ -70,9 +230,12 @@ class Main(Star):
         DATA_DIR = plugin_data_path
         DATA_FILE = DATA_DIR / "pet_data.yml"
         BACKUP_DIR = DATA_DIR / "backups"
+        MARKET_FILE = DATA_DIR / "market_data.json" # 市场数据文件
 
         # 【新增】初始化管理员列表
         self.admins = self._init_admins()
+
+        self.market_manager = MarketManager(MARKET_FILE) # 初始化市场管理器
 
         self._init_env()
         self._load_data()
@@ -84,6 +247,8 @@ class Main(Star):
         logger.info("[宠物市场] 插件初始化")
         # 启动自动保存任务
         self._save_task = asyncio.create_task(self._auto_save_loop())
+        # 启动市场更新任务
+        self._market_task = asyncio.create_task(self._market_update_loop())
 
     async def terminate(self):
         """插件终止"""
@@ -91,13 +256,32 @@ class Main(Star):
         # 取消自动保存任务
         if self._save_task:
             self._save_task.cancel()
-            try:
-                await self._save_task
-            except asyncio.CancelledError:
-                pass
+        if hasattr(self, '_market_task') and self._market_task:
+            self._market_task.cancel()
+        
+        try:
+            if self._save_task: await self._save_task
+            if hasattr(self, '_market_task') and self._market_task: await self._market_task
+        except asyncio.CancelledError:
+            pass
         # 最终保存数据
         if self._dirty:
             self._save_data()
+        self.market_manager.save_market() # 保存市场数据
+
+    async def _market_update_loop(self):
+        """市场自动更新循环"""
+        while True:
+            try:
+                # 每30分钟更新一次市场
+                await asyncio.sleep(1800) 
+                self.market_manager.update_market()
+                logger.info("[宠物市场] 市场行情已刷新")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[宠物市场] 市场更新失败: {e}")
+                await asyncio.sleep(60)
         logger.info("[宠物市场] 插件已关闭")
 
     async def _auto_save_loop(self):
@@ -352,6 +536,80 @@ class Main(Star):
             except ValueError:
                 return None
         return None
+
+    # ==================== 【新增】公寓逻辑 ====================
+    def _get_pet_capacity(self, user_data: Dict) -> int:
+        """获取用户当前宠物容量上限"""
+        # 默认为1个公寓（自带），通过购买公寓增加
+        house_count = user_data.get("house_count", 1) 
+        
+        # 检查租房是否过期
+        rented_expiry = user_data.get("rented_house_expiry", 0)
+        has_rented = rented_expiry > int(time.time())
+        
+        rented_bonus = 1 if has_rented else 0
+        
+        per_house_limit = self.config.get("pet_per_house", 5)
+        return (house_count + rented_bonus) * per_house_limit
+
+    async def _check_and_release_excess_pets(self, group_id: str, user_id: str, event: AstrMessageEvent) -> bool:
+        """检查是否超过容量限制，如果是，执行强制放生逻辑"""
+        user_data = self._get_user_data(group_id, user_id)
+        capacity = self._get_pet_capacity(user_data)
+        pets = user_data.get("pets", [])
+        
+        if len(pets) <= capacity:
+            return False
+            
+        # 超出容量，开始强制放生
+        excess_count = len(pets) - capacity
+        
+        # 获取所有宠物详情以计算身价
+        pet_details = []
+        for pid in pets:
+            p_data = self._get_user_data(group_id, pid)
+            pet_details.append({
+                "id": pid,
+                "value": p_data.get("value", 100),
+                "nickname": p_data.get("nickname") or f"用户{pid}"
+            })
+            
+        # 按身价排序（降序），保留身价高的，放生身价低的
+        pet_details.sort(key=lambda x: x["value"], reverse=True)
+        
+        kept_pets = pet_details[:capacity]
+        released_pets = pet_details[capacity:]
+        
+        kept_ids = [p["id"] for p in kept_pets]
+        user_data["pets"] = kept_ids
+        
+        total_refund = 0
+        release_names = []
+        
+        for p in released_pets:
+            pid = p["id"]
+            refund = int(p["value"] * 0.5) # 返还50%
+            total_refund += refund
+            release_names.append(f"{p['nickname']}({p['value']})")
+            
+            # 处理被放生的宠物数据
+            target_data = self._get_user_data(group_id, pid)
+            target_data["master"] = ""
+            target_data["coins"] = target_data.get("coins", 0) + refund # 也可以选择把钱给主人
+            self._save_user_data(group_id, pid, target_data)
+            
+        # 返还金币给主人
+        user_data["coins"] = user_data.get("coins", 0) + total_refund
+        self._save_user_data(group_id, user_id, user_data)
+        
+        msg = (
+            f"🚫 警告：你的公寓容量不足（上限{capacity}只），已强制放生 {excess_count} 只低身价宠物！\n"
+            f"🌬️ 离家出走：{', '.join(release_names)}\n"
+            f"💰 获得返还：{total_refund} 金币\n"
+            f"💡 提示：请使用 /购买公寓 提升容量上限。"
+        )
+        yield event.plain_result(msg)
+        return True
 
     async def _fetch_nickname(self, event: AstrMessageEvent, user_id: str) -> str:
         """获取用户昵称（增强版：支持 API 主动获取）"""
@@ -755,6 +1013,9 @@ class Main(Star):
                 {"cmd": "/购买宠物 @群友/QQ", "desc": "购买指定宠物"},
                 {"cmd": "/放生宠物 @群友/QQ", "desc": "放生宠物（返还30%身价）"},
                 {"cmd": "/赎身", "desc": "🎉 宠物赎身获得自由（24小时保护期）"},
+                {"cmd": "/购买公寓", "desc": "🏠 购买公寓增加宠物容量上限"},
+                {"cmd": "/租房", "desc": "📅 租借临时公寓(+5容量/7天)"},
+                {"cmd": "/我的公寓", "desc": "🏘️ 查看所有公寓及入住情况"},
                 {"cmd": "/打工", "desc": "派遣所有宠物打工赚钱"},
                 {"cmd": "/逃跑", "desc": "尝试逃离主人(30%成功)"},
                 {"cmd": "/训练 @群友/QQ", "desc": "训练单只宠物提升身价（冷却1天）"},
@@ -777,11 +1038,10 @@ class Main(Star):
                 {"cmd": "/抢劫 @群友/QQ", "desc": "每小时可抢劫一次"},
                 {"cmd": "/交罚款", "desc": "抢劫失败后缴纳罚款"},
                 {"cmd": "/坐牢", "desc": "抢劫失败后选择坐牢"},
-                {"cmd": "/投资 5000", "desc": "💰 进行主投资（最低5000）"},
-                {"cmd": "/加投 500", "desc": "📈 在现有投资上加投（500-5000）"},
-                {"cmd": "/投资状态", "desc": "查看当前投资状态与收益"},
-                {"cmd": "/止盈", "desc": "主动止盈获取收益"},
-                {"cmd": "/止损", "desc": "主动止损减少亏损"},
+                {"cmd": "/金融市场", "desc": "📊 查看基金/股票/虚拟币大盘"},
+                {"cmd": "/买入 [代码] [金额]", "desc": "💸 购买理财产品"},
+                {"cmd": "/卖出 [代码] [全部]", "desc": "💰 卖出持仓变现"},
+                {"cmd": "/我的持仓", "desc": "👜 查看持仓详情与盈亏"},
             ]
         }
         try:
@@ -891,6 +1151,20 @@ class Main(Star):
                 cooldown_seconds = self.config.get("purchase_cooldown", 3600)
                 in_cooldown, remain = self._check_cooldown(user_data, "purchase", cooldown_seconds)
                 if in_cooldown:
+                    mins = remain // 60
+                    secs = remain % 60
+                    yield event.plain_result(f"⏰ 购买冷却中，剩余 {mins}分{secs}秒。")
+                    return
+                
+                # 【新增】检查公寓容量
+                capacity = self._get_pet_capacity(user_data)
+                current_pets = len(user_data.get("pets", []))
+                if current_pets >= capacity:
+                    yield event.plain_result(f"❌ 你的公寓已满（{current_pets}/{capacity}）！请先购买更多公寓。")
+                    return
+
+                # 检查是否已拥有
+                if target_id in user_data.get("pets", []):
                     mins = remain // 60
                     secs = remain % 60
                     yield event.plain_result(f"⏰ 购买冷却中，剩余 {mins}分{secs}秒。")
@@ -1082,19 +1356,11 @@ class Main(Star):
                 user_data["coins"] = user_data.get("coins", 0) + total
                 lines.append(f"\n💰 总计获得 {total} 金币")
 
-            # 【新增】检查投资结算
-            investment_msgs = self._settle_investments(user_data)
             
             self._set_cooldown(user_data, "work")
             self._save_user_data(group_id, user_id, user_data)
 
             lines.append(f"💵 当前余额：{user_data['coins']} 金币")
-            
-            # 添加投资信息
-            if investment_msgs:
-                lines.append("")
-                for msg in investment_msgs:
-                    lines.append(msg)
             
             yield event.plain_result("\n".join(lines))
 
@@ -1484,7 +1750,12 @@ class Main(Star):
 
         # 加入锁机制以检测爆仓
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
-            user = self._get_user_data(group_id, user_id)
+            # 【新增】检查公寓容量并强制放生
+            if await self._check_and_release_excess_pets(group_id, user_id, event):
+                # 如果触发了放生，重新获取数据
+                user = self._get_user_data(group_id, user_id)
+            else:
+                user = self._get_user_data(group_id, user_id)
 
             # 更新利息并检查强制清算
             self._update_loan_interest(user)
@@ -1494,7 +1765,10 @@ class Main(Star):
             self._save_user_data(group_id, user_id, user)
 
             pets = user.get("pets", [])
-            lines = ["【🐾 我的宠物】"]
+            capacity = self._get_pet_capacity(user)
+            house_count = user.get("house_count", 1)
+            
+            lines = [f"【🐾 我的宠物】({len(pets)}/{capacity})"]
 
             if not pets:
                 lines.append("你还没有宠物。")
@@ -1511,7 +1785,8 @@ class Main(Star):
             bank_level = user.get("bank_level", 1)
             loan = user.get("loan_amount", 0)
 
-            lines.append(f"\n💵 当前余额：{coins} 金币")
+            lines.append(f"\n🏠 我的房产：{house_count} 套公寓")
+            lines.append(f"💵 当前余额：{coins} 金币")
             lines.append(f"🏦 银行存款：{bank} 金币 (Lv.{bank_level})")
             if loan > 0:
                 lines.append(f"💸 银行欠款：{loan} 金币")
@@ -2507,6 +2782,171 @@ class Main(Star):
             self._save_user_data(group_id, user_id, user)
             yield event.plain_result("✅ 已清空所有冷却时间。")
 
+    # ==================== 命令：购买公寓 ====================
+    @filter.command("购买公寓")
+    async def buy_house(self, event: AstrMessageEvent):
+        """购买公寓扩充宠物上限"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        jailed, remain = self._check_jailed(group_id, user_id)
+        if jailed:
+            yield event.plain_result(f"🔒 监狱里无法进行房产交易。")
+            return
+
+        price = self.config.get("house_price", 20000)
+        
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            
+            if user.get("coins", 0) < price:
+                yield event.plain_result(f"❌ 金币不足！购买一间公寓需要 {price} 金币。")
+                return
+                
+            user["coins"] -= price
+            user["house_count"] = user.get("house_count", 1) + 1
+            
+            new_capacity = self._get_pet_capacity(user)
+            
+            self._save_user_data(group_id, user_id, user)
+            
+            yield event.plain_result(
+                f"🎉 购房成功！恭喜你成为新的房产主！\n"
+                f"🏠 当前房产：{user['house_count']} 套\n"
+                f"🐾 容纳上限：{new_capacity} 只宠物\n"
+                f"💵 当时余额：{user['coins']} 金币"
+            )
+
+    # ==================== 命令：租房 ====================
+    @filter.command("租房")
+    async def rent_house(self, event: AstrMessageEvent):
+        """租借临时公寓（7天，增加1间容量）"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+
+        jailed, remain = self._check_jailed(group_id, user_id)
+        if jailed:
+            yield event.plain_result(f"🔒 监狱里无法租房。")
+            return
+
+        price = self.config.get("house_rent_price", 2000)
+        
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            
+            if user.get("coins", 0) < price:
+                yield event.plain_result(f"❌ 金币不足！租借公寓(7天)需要 {price} 金币。")
+                return
+
+            current_expiry = user.get("rented_house_expiry", 0)
+            now = int(time.time())
+            
+            # 如果已经在租，续费7天，否则从现在开始7天
+            if current_expiry > now:
+                new_expiry = current_expiry + (7 * 86400)
+                msg_type = "续租"
+            else:
+                new_expiry = now + (7 * 86400)
+                msg_type = "租房"
+                
+            user["coins"] -= price
+            user["rented_house_expiry"] = new_expiry
+            
+            new_capacity = self._get_pet_capacity(user)
+            days_left = (new_expiry - now) // 86400
+            
+            self._save_user_data(group_id, user_id, user)
+            
+            yield event.plain_result(
+                f"🎉 {msg_type}成功！\n"
+                f"📅 到期时间：{days_left}天后\n"
+                f"🐾 临时扩容：+5 容量 (总上限: {new_capacity})\n"
+                f"💵 当时余额：{user['coins']} 金币"
+            )
+
+    # ==================== 命令：我的公寓 ====================
+    @filter.command("我的公寓", alias={"我的房产"})
+    async def my_house(self, event: AstrMessageEvent):
+        """查看公寓及入住宠物"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+        
+        # 解析参数看看是不是查特定公寓
+        args = event.message_str.split()
+        house_idx = None
+        if len(args) > 1 and args[1].replace('公寓', '').isdigit():
+            house_idx = int(args[1].replace('公寓', ''))
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            # 检查强制放生
+            if await self._check_and_release_excess_pets(group_id, user_id, event):
+                user = self._get_user_data(group_id, user_id) # reload
+            else:
+                user = self._get_user_data(group_id, user_id)
+
+            house_count = user.get("house_count", 1)
+            pets = user.get("pets", [])
+            per_house = self.config.get("pet_per_house", 5)
+            
+            rented_expiry = user.get("rented_house_expiry", 0)
+            has_rented = rented_expiry > int(time.time())
+            
+            total_houses = house_count + (1 if has_rented else 0)
+            capacity = total_houses * per_house
+
+            if house_idx is not None:
+                # 查看特定公寓
+                if house_idx < 1 or house_idx > total_houses:
+                    yield event.plain_result(f"❌ 你只有 {total_houses} 间公寓。")
+                    return
+                
+                start_idx = (house_idx - 1) * per_house
+                end_idx = start_idx + per_house
+                house_pets = pets[start_idx:end_idx]
+                
+                house_name = f"公寓#{house_idx}"
+                if has_rented and house_idx == total_houses:
+                    house_name += " (租赁)"
+                
+                lines = [f"🏠 【{house_name}】入住名单"]
+                if not house_pets:
+                    lines.append("  (空置中...)")
+                else:
+                    for pid in house_pets:
+                        p_data = self._get_user_data(group_id, pid)
+                        name = p_data.get("nickname") or await self._fetch_nickname(event, pid)
+                        lines.append(f"  🐶 {name} (身价: {p_data.get('value', 100)})")
+                
+                lines.append(f"\n入住率: {len(house_pets)}/{per_house}")
+                yield event.plain_result("\n".join(lines))
+                return
+
+            # 如果没有指定公寓，显示概览
+            lines = ["🏘️ 【我的不动产中心】"]
+            lines.append(f"我的公寓：{house_count} 套 (永久)")
+            if has_rented:
+                days = (rented_expiry - int(time.time())) // 86400
+                lines.append(f"租赁公寓：1 套 (剩余 {days} 天)")
+            
+            lines.append(f"总计容量：{capacity} 只 (当前: {len(pets)})")
+            lines.append("-" * 20)
+            
+            # 显示每个公寓的简略信息
+            for i in range(1, total_houses + 1):
+                start = (i - 1) * per_house
+                count = 0
+                if start < len(pets):
+                    count = min(len(pets) - start, per_house)
+                
+                status = "租赁" if (has_rented and i == total_houses) else "自有"
+                bar = "█" * count + "░" * (per_house - count)
+                lines.append(f"公寓 #{i} [{status}]: {bar} {count}/{per_house}")
+                
+            lines.append("\n💡 指令：/公寓 [编号] 查看详情")
+            lines.append("💡 指令：/购买公寓 (20000金币) | /租房 (2000金币/7天)")
+            
+            yield event.plain_result("\n".join(lines))
+
     @filter.command("管理员发金币")
     async def admin_give_coins(self, event: AstrMessageEvent):
         """管理员给指定用户发钱"""
@@ -2573,263 +3013,227 @@ class Main(Star):
             target_name = target.get("nickname") or await self._fetch_nickname(event, target_id)
             yield event.plain_result(f"✅ 已释放 {target_name} 出监狱。")
 
-    # ==================== 命令：投资 ====================
-    @filter.command("投资")
-    async def invest(self, event: AstrMessageEvent):
-        """进行主投资（最低5000）"""
-        group_id = str(event.message_obj.group_id)
-        user_id = str(event.get_sender_id())
-
-        amount = self._extract_amount(event)
-        if not amount or amount < 5000:
-            yield event.plain_result("❌ 投资金额不能少于 5000 金币。用法: /投资 5000")
-            return
-
-        jailed, remain = self._check_jailed(group_id, user_id)
-        if jailed:
-            yield event.plain_result(f"🔒 监狱里无法进行投资。")
-            return
-
-        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
-            user = self._get_user_data(group_id, user_id)
-
-            # 检查是否有未还清的贷款
-            current_loan = user.get("loan_amount", 0)
-            if current_loan > 0:
-                yield event.plain_result(f"❌ 你还有 {current_loan} 金币的未清欠款，必须先还清贷款才能投资！")
-                return
-
-            if user.get("coins", 0) < amount:
-                yield event.plain_result(f"❌ 余额不足！需投资 {amount}，余额 {user['coins']}。")
-                return
-
-            # 检查是否已有活跃投资
-            active_investments = [inv for inv in user.get("investments", []) if inv.get("status") == "active"]
-            if active_investments:
-                yield event.plain_result("❌ 你已有活跃的投资，请先结算或触发止盈/止损！")
-                return
-
-            # 创建新投资
-            trend_name, change_rate = self._get_investment_trend()
-            investment_id = user.get("next_investment_id", 1)
+    # ==================== 命令：金融市场 ====================
+    @filter.command("金融市场", alias={"大盘", "股市"})
+    async def market_view(self, event: AstrMessageEvent):
+        """查看金融市场大盘"""
+        # 触发一次更新检查（如果太久没更新）
+        if int(time.time()) - self.market_manager.market_data["last_update"] > 1800:
+            self.market_manager.update_market()
             
-            investment = {
-                "id": investment_id,
-                "type": "main",  # 主投资
-                "amount": amount,
-                "start_time": int(time.time()),
-                "status": "active",
-                "current_value": amount,
-                "trend_history": [(trend_name, change_rate)],
-                "addon_amount": 0,  # 加投金额
-                "next_settlement_time": int(time.time()) + 3600  # 1小时后结算
-            }
+        summary = self.market_manager.get_market_summary()
+        yield event.plain_result(summary)
 
-            user["coins"] -= amount
-            user["investments"].append(investment)
-            user["next_investment_id"] = investment_id + 1
-            self._save_user_data(group_id, user_id, user)
-
-            msg = f"✅ 投资成功！\n"
-            msg += f"💰 投资金额：{amount} 金币\n"
-            msg += f"📈 初始趋势：{trend_name} {change_rate:+.2%}\n"
-            msg += f"💵 当前余额：{user['coins']} 金币\n"
-            msg += f"⏰ 约24小时后可查看收益"
-
-            yield event.plain_result(msg)
-
-    # ==================== 命令：加投 ====================
-    @filter.command("加投")
-    async def add_investment(self, event: AstrMessageEvent):
-        """在现有投资上加投（500-5000）"""
+    # ==================== 命令：买入 ====================
+    @filter.command("买入", alias={"投资"})
+    async def buy_instrument(self, event: AstrMessageEvent):
+        """买入理财产品：/买入 [代码] [金额]"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
 
-        amount = self._extract_amount(event)
-        if not amount or amount < 500 or amount > 5000:
-            yield event.plain_result("❌ 加投金额需在 500-5000 之间。用法: /加投 1000")
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("❌ 用法: /买入 [代码] [金额] (例如: /买入 F101 1000)\n可在 /金融市场 查看代码")
+            return
+            
+        # 尝试解析参数，兼容 /买入 1000 F101 和 /买入 F101 1000
+        code = None
+        amount = 0
+        
+        for arg in args:
+            if arg.isdigit():
+                amount = int(arg)
+            else:
+                code, _ = self.market_manager.get_instrument(arg)
+        
+        if not code:
+            yield event.plain_result("❌ 未找到该代码的产品，请检查输入。")
+            return
+            
+        if amount < 100:
+            yield event.plain_result("❌ 最低买入金额为 100 金币。")
             return
 
         jailed, remain = self._check_jailed(group_id, user_id)
         if jailed:
-            yield event.plain_result(f"🔒 监狱里无法进行加投。")
+            yield event.plain_result(f"🔒 监狱里无法进行交易。")
             return
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
 
             if user.get("coins", 0) < amount:
-                yield event.plain_result(f"❌ 余额不足！需加投 {amount}，余额 {user['coins']}。")
+                yield event.plain_result(f"❌ 余额不足！需 {amount}，余额 {user['coins']}。")
                 return
 
-            # 检查是否有活跃的主投资
-            active_investments = [inv for inv in user.get("investments", []) 
-                                if inv.get("status") == "active" and inv.get("type") == "main"]
-            if not active_investments:
-                yield event.plain_result("❌ 你没有活跃的主投资，无法加投。请先使用 /投资 进行投资。")
-                return
+            # 处理旧版投资清理
+            if "investments" in user and user["investments"]:
+                yield event.plain_result("⚠️ 检测到旧版投资数据，系统升级，正在为您结算旧版投资...")
+                old_invs = user.pop("investments")
+                refund = 0
+                for inv in old_invs:
+                    if inv["status"] == "active":
+                         refund += inv["current_value"]
+                if refund > 0:
+                    user["coins"] += refund
+                    yield event.plain_result(f"✅ 旧投资已结算，返还 {refund} 金币。请重新操作。")
+                    self._save_user_data(group_id, user_id, user)
+                    return # 让用户重新买，避免逻辑混乱
 
-            investment = active_investments[0]
-            
-            # 检查加投总额是否超过5000
-            current_addon = investment.get("addon_amount", 0)
-            if current_addon + amount > 5000:
-                can_add = max(0, 5000 - current_addon)
-                yield event.plain_result(f"❌ 加投超限！已加投 {current_addon}，还可加投 {can_add}。")
-                return
+            # 初始化新版持仓结构
+            if "holdings" not in user:
+                user["holdings"] = {}
 
-            # 【修复】执行加投 - 不应立即应用趋势，只增加投资金额
+            # 扣款
             user["coins"] -= amount
-            investment["addon_amount"] += amount
-            investment["current_value"] += amount  # 只增加投资金额，下次结算时应用趋势
-            # 注意：不应该这里追加趋势历史，应该在结算时追加
             
+            # 记录持仓
+            _, data = self.market_manager.get_instrument(code)
+            current_price = data["current_price"]
+            buy_shares = amount / current_price
+            
+            holding = user["holdings"].get(code, {"shares": 0.0, "total_cost": 0.0, "avg_price": 0.0})
+            holding["shares"] += buy_shares
+            holding["total_cost"] += amount
+            holding["avg_price"] = holding["total_cost"] / holding["shares"]
+            user["holdings"][code] = holding
+
             self._save_user_data(group_id, user_id, user)
 
-            total_investment = investment["amount"] + investment["addon_amount"]
-            msg = f"✅ 加投成功！\n"
-            msg += f"💰 加投金额：{amount} 金币\n"
-            msg += f"💵 当前总投资：{total_investment} 金币\n"
-            msg += f"💵 当前价值：{investment['current_value']} 金币\n"
-            msg += f"💵 当前余额：{user['coins']} 金币\n"
-            msg += f"⏰ 下次结算时应用加投的收益计算"
+            yield event.plain_result(
+                f"✅ 买入成功！\n"
+                f"📄 产品：{data['name']} ({code})\n"
+                f"💰 投入：{amount} 金币\n"
+                f"📊 份额：{buy_shares:.4f}\n"
+                f"💵 当前余额：{user['coins']} 金币"
+            )
 
-            yield event.plain_result(msg)
-
-    # ==================== 命令：投资状态 ====================
-    @filter.command("投资状态")
-    async def investment_status(self, event: AstrMessageEvent):
-        """查看当前投资状态与收益"""
+    # ==================== 命令：卖出 ====================
+    @filter.command("卖出", alias={"赎回"})
+    async def sell_instrument(self, event: AstrMessageEvent):
+        """卖出理财产品：/卖出 [代码] [全部/金额]"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
 
-        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
-            user = self._get_user_data(group_id, user_id)
-            investments = user.get("investments", [])
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("❌ 用法: /卖出 [代码] [全部/份额/金额]")
+            return
 
-            if not investments:
-                yield event.plain_result("❌ 你还没有任何投资。")
-                return
+        target_code_input = None
+        sell_amount_input = None
+        is_sell_all = False
 
-            # 过滤活跃投资
-            active_investments = [inv for inv in investments if inv.get("status") == "active"]
-            
-            if not active_investments:
-                yield event.plain_result("❌ 你没有活跃的投资。")
-                return
-
-            investment = active_investments[0]
-            elapsed = int(time.time()) - investment["start_time"]
-            days = elapsed // 86400
-            hours = (elapsed % 86400) // 3600
-            mins = (elapsed % 3600) // 60
-
-            current_value = investment["current_value"]
-            total_input = investment["amount"] + investment.get("addon_amount", 0)
-            profit = current_value - total_input
-            profit_rate = profit / total_input if total_input > 0 else 0
-
-            # 检查是否触发止盈/止损
-            trigger = self._check_investment_trigger(investment)
-            
-            # 【修复】投资类型判断应该基于是否有加投
-            addon_amount = investment.get("addon_amount", 0)
-            if addon_amount > 0:
-                investment_type_str = f"主投资({investment['amount']}) + 加投({addon_amount})"
+        for arg in args:
+            if arg in ["全部", "all", "ALL"]:
+                is_sell_all = True
+            elif arg.replace('.', '', 1).isdigit(): # is float or int
+                sell_amount_input = float(arg) # 可能是金额也可能是份额，这里简化为只支持卖出金额或者“全部”
             else:
-                investment_type_str = f"主投资({investment['amount']})"
+                target_code_input = arg
+
+        code, instrument_data = self.market_manager.get_instrument(target_code_input) if target_code_input else (None, None)
+
+        if not code:
+             yield event.plain_result("❌ 请指定正确的产品代码。")
+             return
+
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            holdings = user.get("holdings", {})
             
-            msg = f"【📊 投资状态】\n"
-            msg += f"投资类型：{investment_type_str}\n"
-            msg += f"投入总额：{total_input} 金币\n"
-            msg += f"当前价值：{current_value} 金币\n"
-            msg += f"收益：{profit:+d} 金币（{profit_rate:+.2%}）\n"
-            # 【改进】显示运行时间时包含天数
-            if days > 0:
-                msg += f"运行时间：{days}天{hours}小时{mins}分钟\n"
+            if code not in holdings:
+                yield event.plain_result(f"❌ 你没有持有 {instrument_data['name']}。")
+                return
+
+            holding = holdings[code]
+            current_price = instrument_data["current_price"]
+            max_value = holding["shares"] * current_price
+            
+            sell_value = 0
+            sell_shares = 0
+
+            if is_sell_all:
+                sell_shares = holding["shares"]
+                sell_value = max_value
+            elif sell_amount_input:
+                # 假设输入的是金额（为了方便用户）
+                if sell_amount_input > max_value:
+                    yield event.plain_result(f"❌ 持仓价值不足，当前仅有 {max_value:.2f} 金币。")
+                    return
+                sell_value = sell_amount_input
+                sell_shares = sell_value / current_price
             else:
-                msg += f"运行时间：{hours}小时{mins}分钟\n"
-            msg += f"\n📈 趋势历史：\n"
+                yield event.plain_result("❌ 请输入要卖出的金额或“全部”。")
+                return
+
+            # 执行卖出
+            holding["shares"] -= sell_shares
+            cost_basis = holding["avg_price"] * sell_shares
+            profit = sell_value - cost_basis
             
-            for i, (trend, rate) in enumerate(investment["trend_history"][-5:], 1):
-                msg += f"  {i}. {trend} {rate:+.2%}\n"
+            user["coins"] += int(sell_value) # 取整
+            # 更新成本 (总量变少，单价不变)
+            holding["total_cost"] -= cost_basis
+            
+            if holding["shares"] < 0.0001:
+                del holdings[code]
+            
+            self._save_user_data(group_id, user_id, user)
+            
+            yield event.plain_result(
+                f"✅ 卖出成功！\n"
+                f"📄 产品：{instrument_data['name']}\n"
+                f"💰 获得资金：{int(sell_value)} 金币\n"
+                f"📈 盈亏：{profit:+.2f} 金币\n"
+                f"💵 当前余额：{user['coins']} 金币"
+            )
 
-            if trigger:
-                msg += f"\n🔔 触发条件：{trigger}\n"
-                msg += f"💡 可使用 /{trigger} 来执行操作"
-
-            yield event.plain_result(msg)
-
-    # ==================== 命令：止盈 ====================
-    @filter.command("止盈")
-    async def take_profit(self, event: AstrMessageEvent):
-        """主动止盈获取收益"""
+    # ==================== 命令：我的持仓 ====================
+    @filter.command("我的持仓", alias={"持仓"})
+    async def my_portfolio(self, event: AstrMessageEvent):
+        """查看当前持仓详情"""
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
+        
+        # 触发更新
+        if int(time.time()) - self.market_manager.market_data["last_update"] > 1800:
+            self.market_manager.update_market()
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
+            holdings = user.get("holdings", {})
             
-            # 检查是否有活跃投资
-            active_investments = [inv for inv in user.get("investments", []) if inv.get("status") == "active"]
-            if not active_investments:
-                yield event.plain_result("❌ 你没有活跃的投资。")
+            if not holdings:
+                yield event.plain_result("👜 你当前没有持有任何理财产品。\n使用 /金融市场 查看行情，/买入 进行投资。")
                 return
 
-            investment = active_investments[0]
-            current_value = investment["current_value"]
-            total_input = investment["amount"] + investment.get("addon_amount", 0)
-            profit = current_value - total_input
-
-            # 执行止盈
-            user["coins"] += current_value
-            investment["status"] = "closed"
-            investment["profit"] = profit
-            investment["close_time"] = int(time.time())
-            investment["close_reason"] = "止盈"
-
-            self._save_user_data(group_id, user_id, user)
-
-            msg = f"✅ 止盈成功！\n"
-            msg += f"💰 收回资金：{current_value} 金币\n"
-            msg += f"📈 本次收益：{profit:+d} 金币（{profit/total_input if total_input > 0 else 0:+.2%}）\n"
-            msg += f"💵 当前余额：{user['coins']} 金币"
-
-            yield event.plain_result(msg)
-
-    # ==================== 命令：止损 ====================
-    @filter.command("止损")
-    async def stop_loss(self, event: AstrMessageEvent):
-        """主动止损减少亏损"""
-        group_id = str(event.message_obj.group_id)
-        user_id = str(event.get_sender_id())
-
-        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
-            user = self._get_user_data(group_id, user_id)
+            lines = ["👜 【我的持仓元宇宙】"]
+            total_market_value = 0
+            total_profit = 0
             
-            # 检查是否有活跃投资
-            active_investments = [inv for inv in user.get("investments", []) if inv.get("status") == "active"]
-            if not active_investments:
-                yield event.plain_result("❌ 你没有活跃的投资。")
-                return
-
-            investment = active_investments[0]
-            current_value = investment["current_value"]
-            total_input = investment["amount"] + investment.get("addon_amount", 0)
-            loss = current_value - total_input
-
-            # 执行止损
-            user["coins"] += current_value
-            investment["status"] = "closed"
-            investment["loss"] = loss
-            investment["close_time"] = int(time.time())
-            investment["close_reason"] = "止损"
-
-            self._save_user_data(group_id, user_id, user)
-
-            msg = f"✅ 止损成功！\n"
-            msg += f"💰 收回资金：{current_value} 金币\n"
-            msg += f"📉 本次亏损：{loss:+d} 金币（{loss/total_input if total_input > 0 else 0:.2%}）\n"
-            msg += f"💵 当前余额：{user['coins']} 金币"
-
-            yield event.plain_result(msg)
+            for code, data in holdings.items():
+                _, info = self.market_manager.get_instrument(code)
+                if not info: continue
+                
+                current_price = info["current_price"]
+                market_value = data["shares"] * current_price
+                cost = data["total_cost"]
+                profit = market_value - cost
+                profit_rate = profit / cost if cost > 0 else 0
+                
+                total_market_value += market_value
+                total_profit += profit
+                
+                icon = "🔴" if profit >= 0 else "🟢" # 红涨绿跌（A股习惯），或者通用 📈 📉
+                icon = "📈" if profit >= 0 else "📉"
+                
+                lines.append(f"{icon} {info['name']} ({code})")
+                lines.append(f"   持有: {data['shares']:.2f} 份 | 市值: {int(market_value)}")
+                lines.append(f"   盈亏: {profit:+.2f} ({profit_rate:+.2%})")
+            
+            lines.append("-" * 20)
+            lines.append(f"💰 总市值: {int(total_market_value)} 金币")
+            lines.append(f"💸 总盈亏: {total_profit:+.2f} 金币")
+            
+            yield event.plain_result("\n".join(lines))
