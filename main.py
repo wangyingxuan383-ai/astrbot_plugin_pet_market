@@ -50,6 +50,15 @@ EVOLUTION_COSTS = {
     "史诗": 3000
 }
 
+# ==================== 商店物品定义 ====================
+SHOP_ITEMS = {
+    "101": {"name": "精力药水", "price": 500, "desc": "立即清除打工和训练的冷却时间", "icon": "🧪"},
+    "102": {"name": "护身符", "price": 2000, "desc": "自动抵挡一次抢劫（生效后消耗）", "icon": "🧿"},
+    "103": {"name": "越狱卡", "price": 5000, "desc": "在监狱中使用，立即重获自由", "icon": "💳"},
+    "104": {"name": "刮刮乐", "price": 100, "desc": "有机会获得 0-500 金币", "icon": "🎟️"},
+    "105": {"name": "宠物零食", "price": 300, "desc": "给宠物喂食，随机增加 20-50 身价", "icon": "🦴"},
+}
+
 
 # ==================== 市场管理器 ====================
 class MarketManager:
@@ -1016,6 +1025,11 @@ class Main(Star):
                 {"cmd": "/购买公寓", "desc": "🏠 购买公寓增加宠物容量上限"},
                 {"cmd": "/租房", "desc": "📅 租借临时公寓(+5容量/7天)"},
                 {"cmd": "/我的公寓", "desc": "🏘️ 查看所有公寓及入住情况"},
+                {"cmd": "/宠物签到", "desc": "📅 每日签到领工资"},
+                {"cmd": "/商店", "desc": "🛒 购买道具增强体验"},
+                {"cmd": "/购买道具 [ID]", "desc": "💳 购买指定道具"},
+                {"cmd": "/我的背包", "desc": "🎒 查看和使用道具"},
+                {"cmd": "/使用道具 [ID]", "desc": "🧪 使用背包物品"},
                 {"cmd": "/打工", "desc": "派遣所有宠物打工赚钱"},
                 {"cmd": "/逃跑", "desc": "尝试逃离主人(30%成功)"},
                 {"cmd": "/训练 @群友/QQ", "desc": "训练单只宠物提升身价（冷却1天）"},
@@ -2580,6 +2594,19 @@ class Main(Star):
                     yield event.plain_result(f"⏰ 抢劫冷却中，剩余 {mins} 分钟。")
                     return
 
+                # 【新增】检查护身符
+                target_inventory = target_data.get("inventory", {})
+                if target_inventory.get("102", 0) > 0:
+                    target_inventory["102"] -= 1
+                    if target_inventory["102"] <= 0:
+                        del target_inventory["102"]
+                    self._save_user_data(group_id, target_id, target_data)
+                    self._set_cooldown(user_data, "rob") # 仍然产生冷却
+                    
+                    target_name = target_data.get("nickname") or await self._fetch_nickname(event, target_id)
+                    yield event.plain_result(f"🛡️ 糟糕！{target_name} 佩戴了护身符，你的行动被抵挡了！")
+                    return
+
                 # ==================== 新增：待处理案件超时逻辑 ====================
                 pending_penalty = user_data.get("rob_pending_penalty")
                 if pending_penalty:
@@ -2946,6 +2973,215 @@ class Main(Star):
             lines.append("💡 指令：/购买公寓 (20000金币) | /租房 (2000金币/7天)")
             
             yield event.plain_result("\n".join(lines))
+
+    # ==================== 命令：商店系统 ====================
+    @filter.command("商店", alias={"道具商店"})
+    async def shop_view(self, event: AstrMessageEvent):
+        """查看道具商店"""
+        lines = ["🛒 【宠物百货商店】"]
+        lines.append("消耗金币购买道具，增强你的游戏体验！")
+        lines.append("-" * 20)
+        
+        for pid, item in SHOP_ITEMS.items():
+            lines.append(f"{item['icon']} [{pid}] {item['name']}")
+            lines.append(f"   💰 {item['price']} 金币")
+            lines.append(f"   📝 {item['desc']}")
+            lines.append("")
+            
+        lines.append("💡 指令：/购买道具 [ID] (例如: /购买道具 101)")
+        lines.append("💡 指令：/我的背包 查看已拥有道具")
+        
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("购买道具")
+    async def buy_item(self, event: AstrMessageEvent):
+        """购买商店道具"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+        
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("❌ 用法: /购买道具 [道具ID]")
+            return
+            
+        item_id = args[1]
+        
+        if item_id not in SHOP_ITEMS:
+            yield event.plain_result("❌ 商品不存在，请检查ID。")
+            return
+            
+        item = SHOP_ITEMS[item_id]
+        price = item["price"]
+        
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            
+            if user.get("coins", 0) < price:
+                yield event.plain_result(f"❌ 余额不足！需要 {price} 金币。")
+                return
+                
+            user["coins"] -= price
+            
+            # 由于没有复杂的背包系统，简单用字典计数
+            inventory = user.setdefault("inventory", {})
+            inventory[item_id] = inventory.get(item_id, 0) + 1
+            
+            self._save_user_data(group_id, user_id, user)
+            
+            yield event.plain_result(
+                f"🎉 购买成功！\n"
+                f"获得：{item['icon']} {item['name']} x1\n"
+                f"花费：{price} 金币\n"
+                f"当前余额：{user['coins']} 金币"
+            )
+
+    @filter.command("我的背包", alias={"背包"})
+    async def my_inventory(self, event: AstrMessageEvent):
+        """查看拥有道具"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+        
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            inventory = user.get("inventory", {})
+            
+            if not inventory:
+                yield event.plain_result("🎒 你的背包空空如也。")
+                return
+                
+            lines = ["🎒 【我的背包】"]
+            for pid, count in inventory.items():
+                if count <= 0: continue
+                item = SHOP_ITEMS.get(pid, {"name": "未知物品", "icon": "❓"})
+                lines.append(f"{item['icon']} {item['name']} x{count} (ID: {pid})")
+                
+            lines.append("-" * 20)
+            lines.append("💡 指令：/使用道具 [ID]")
+            
+            yield event.plain_result("\n".join(lines))
+
+    @filter.command("使用道具")
+    async def use_item(self, event: AstrMessageEvent):
+        """使用背包中的道具"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+        
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("❌ 用法: /使用道具 [道具ID]")
+            return
+            
+        item_id = args[1]
+        
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            inventory = user.get("inventory", {})
+            
+            if inventory.get(item_id, 0) <= 0:
+                yield event.plain_result("❌ 你没有该道具。")
+                return
+                
+            item = SHOP_ITEMS.get(item_id)
+            if not item:
+                yield event.plain_result("❌ 道具数据错误。")
+                return
+                
+            # 执行道具效果
+            msg = ""
+            consumed = True
+            
+            if item_id == "101": # 精力药水
+                user["cooldowns"] = {}
+                msg = "🧪 精力焕发！所有冷却时间已重置！"
+                
+            elif item_id == "102": # 护身符
+                msg = "🧿 护身符已装备！将自动抵挡下一次抢劫。(无需手动使用，放在背包即可生效)"
+                consumed = False # 手动使用不消耗，只是提示
+                
+            elif item_id == "103": # 越狱卡
+                jailed, _ = self._check_jailed(group_id, user_id)
+                if not jailed:
+                    msg = "❌ 你现在是自由身，无需越狱。"
+                    consumed = False
+                else:
+                    user["jailed_until"] = 0
+                    msg = "💳 越狱成功！重获自由！"
+                    
+            elif item_id == "104": # 刮刮乐
+                bonus = random.randint(0, 500)
+                user["coins"] += bonus
+                msg = f"🎟️ 刮开了彩票... 获得了 {bonus} 金币！"
+                
+            elif item_id == "105": # 宠物零食
+                pets = user.get("pets", [])
+                if not pets:
+                    msg = "❌ 你没有宠物可以喂食。"
+                    consumed = False
+                else:
+                    target_pet_id = pets[0] # 默认喂第一只，或者扩展参数指定
+                    # 尝试解析参数指定宠物
+                    if len(args) > 2:
+                         # 简单的尝试匹配
+                         pass 
+                    
+                    pet_data = self._get_user_data(group_id, target_pet_id)
+                    increase = random.randint(20, 50)
+                    pet_data["value"] += increase
+                    pet_name = pet_data.get("nickname") or f"宠物{target_pet_id}"
+                    self._save_user_data(group_id, target_pet_id, pet_data)
+                    msg = f"🦴 给 {pet_name} 喂了零食，身价增加 {increase}！"
+            
+            else:
+                msg = "❌ 该道具无法主动使用。"
+                consumed = False
+
+            if consumed:
+                inventory[item_id] -= 1
+                if inventory[item_id] <= 0:
+                    del inventory[item_id]
+                self._save_user_data(group_id, user_id, user)
+                
+            yield event.plain_result(msg)
+
+    # ==================== 命令：每日签到 ====================
+    @filter.command("宠物签到", alias={"签到"})
+    async def daily_checkin(self, event: AstrMessageEvent):
+        """每日签到领取奖励"""
+        group_id = str(event.message_obj.group_id)
+        user_id = str(event.get_sender_id())
+        
+        async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
+            user = self._get_user_data(group_id, user_id)
+            
+            last_checkin = user.get("last_checkin", 0)
+            now = int(time.time())
+            
+            # 检查是否是同一天
+            import datetime
+            last_date = datetime.datetime.fromtimestamp(last_checkin).date()
+            current_date = datetime.datetime.fromtimestamp(now).date()
+            
+            if last_date == current_date:
+                yield event.plain_result("📅 今天已经签到过了，明天再来吧！")
+                return
+                
+            # 发放奖励
+            coins = random.randint(200, 500)
+            user["coins"] += coins
+            user["last_checkin"] = now
+            
+            msg = f"✅ 签到成功！\n💰 获得金币：{coins}"
+            
+            # 20% 概率额外获得道具
+            if random.random() < 0.2:
+                item_id = random.choice(list(SHOP_ITEMS.keys()))
+                item = SHOP_ITEMS[item_id]
+                inventory = user.setdefault("inventory", {})
+                inventory[item_id] = inventory.get(item_id, 0) + 1
+                msg += f"\n🎁 幸运爆棚！额外获得：{item['icon']} {item['name']} x1"
+                
+            self._save_user_data(group_id, user_id, user)
+            yield event.plain_result(msg)
 
     @filter.command("管理员发金币")
     async def admin_give_coins(self, event: AstrMessageEvent):
