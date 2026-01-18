@@ -115,5 +115,24 @@
     "description": "赎身后保护时间（小时）",
     "default": 24,
     "hint": "例如：24 表示 24 小时内不能被购买"
+
+  },
+  "rob_jail_hours": {
+    "type": "int",
+    "description": "抢劫失败监禁时间（小时）",
+    "default": 24,
+    "hint": "默认24小时"
+  },
+  "work_tax_rate": {
+    "type": "float",
+    "description": "宠物打工上交主人的比例",
+    "default": 0.3,
+    "hint": "0.3 表示上交 30%，自己留 70%"
+  },
+  "escape_success_rate": {
+    "type": "float",
+    "description": "宠物逃跑成功率",
+    "default": 0.3,
+    "hint": "0.3 表示 30% 概率成功"
   }
 }
