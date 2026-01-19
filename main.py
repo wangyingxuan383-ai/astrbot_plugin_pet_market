@@ -699,7 +699,6 @@ class Main(Star):
             # 处理被放生的宠物数据
             target_data = self._get_user_data(group_id, pid)
             target_data["master"] = ""
-            target_data["coins"] = target_data.get("coins", 0) + refund # 也可以选择把钱给主人
             self._save_user_data(group_id, pid, target_data)
             
         # 返还金币给主人
@@ -819,6 +818,34 @@ class Main(Star):
         """
         final_amount = principal * ((1 + rate) ** hours)
         interest = int(final_amount - principal)
+        return interest
+
+    def _format_amount_change(self, before: int, after: int, label: str = "余额") -> str:
+        delta = after - before
+        sign = "+" if delta >= 0 else ""
+        return f"{label}：{before} -> {after} ({sign}{delta})"
+
+    def _settle_bank_interest(self, user: Dict) -> int:
+        bank = user.get("bank", 0)
+        now = int(time.time())
+        user.setdefault("last_interest_time", now)
+
+        if bank <= 0:
+            user["last_interest_time"] = now
+            return 0
+
+        last_interest = user.get("last_interest_time", now)
+        max_hours = self.config.get("bank_max_interest_time", 24)
+        hours = min((now - last_interest) // 3600, max_hours)
+        if hours < 1:
+            user["last_interest_time"] = now
+            return 0
+
+        rate = self.config.get("bank_interest_rate", 0.01)
+        interest = self._calculate_compound_interest(bank, rate, hours)
+        if interest > 0:
+            user["coins"] = user.get("coins", 0) + interest
+        user["last_interest_time"] = now
         return interest
 
     # --- 贷款辅助方法与强制清算逻辑 ---
@@ -1187,9 +1214,13 @@ class Main(Star):
             logger.error(f"[宠物市场] 菜单图片生成失败: {e}，使用纯文本兜底")
             # 兜底方案：使用纯文本菜单
             text_menu = "🐾 宠物市场菜单\n\n"
-            for item in menu_data["items"]:
-                text_menu += f"{item['cmd']}\n  └─ {item['desc']}\n\n"
-            text_menu += "💡 提示：图片菜单生成失败，显示文本版本"
+            item_texts = [f"{item['cmd']} {item['desc']}" for item in menu_data["items"]]
+            col_width = max(len(t) for t in item_texts) + 4 if item_texts else 0
+            for i in range(0, len(item_texts), 2):
+                left = item_texts[i]
+                right = item_texts[i + 1] if i + 1 < len(item_texts) else ""
+                text_menu += f"{left.ljust(col_width)}{right}\n"
+            text_menu += "\n💡 提示：图片菜单生成失败，显示文本版本"
             yield event.plain_result(text_menu)
 
     #
@@ -1322,6 +1353,7 @@ class Main(Star):
                     return
 
                 # 执行购买
+                coins_before = user_data.get("coins", 0)
                 user_data["coins"] -= cost
                 user_data.setdefault("pets", []).append(target_id)
                 self._set_cooldown(user_data, "purchase")
@@ -1344,7 +1376,8 @@ class Main(Star):
                     yield event.plain_result(
                         f"✅ 成功购买宠物 {target_name}，消耗 {cost} 金币。\n"
                         f"💰 宠物身价上涨 {value_increase}，获得补贴 {subsidy} 金币。\n"
-                        f"⭐ 当前阶段：{target_data['evolution_stage']}"
+                        f"⭐ 当前阶段：{target_data['evolution_stage']}\n"
+                        f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
                     )
                 else:
                     # 有主人：原主人获得全额
@@ -1360,7 +1393,8 @@ class Main(Star):
                     yield event.plain_result(
                         f"✅ 成功从 {old_name} 手中购买宠物 {target_name}，消耗 {cost} 金币。\n"
                         f"💵 原主人获得 {cost} 金币，宠物身价上涨 {value_increase}。\n"
-                        f"⭐ 当前阶段：{target_data['evolution_stage']}"
+                        f"⭐ 当前阶段：{target_data['evolution_stage']}\n"
+                        f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
                     )
 
     # ==================== 命令：放生宠物 ====================
@@ -1402,6 +1436,7 @@ class Main(Star):
             pet_value = target_data.get("value", 100)
 
             # 返还30%价值给主人
+            coins_before = user_data.get("coins", 0)
             refund = int(pet_value * 0.3)
             user_data["coins"] = user_data.get("coins", 0) + refund
 
@@ -1413,7 +1448,7 @@ class Main(Star):
             yield event.plain_result(
                 f"🕊️ 成功放生宠物 {target_name}！\n"
                 f"💰 返还 {refund} 金币（身价30%）\n"
-                f"💵 当前余额：{user_data['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：打工 ====================
@@ -1439,6 +1474,8 @@ class Main(Star):
                 secs = remain % 60
                 yield event.plain_result(f"⏰ 打工冷却中，剩余 {mins}分{secs}秒。")
                 return
+
+            coins_before = user_data.get("coins", 0)
 
             pets = user_data.get("pets", [])
             total = 0
@@ -1466,7 +1503,7 @@ class Main(Star):
                         pet["value"] = max(100, pet["value"] - loss)
                         pet["evolution_stage"] = self._get_evolution_stage(pet["value"])
                         copywriting = random.choice(self.copywriting.get("failure", ["打工失败..."]))
-                        lines.append(f"[{stage}] {name}：{copywriting} -{loss}")
+                        lines.append(f"[{stage}] {name}：{copywriting} 身价-{loss} (当前{pet['value']})")
                         self._save_user_data(group_id, pid, pet)
 
             # 【新增】打工纳税逻辑
@@ -1479,6 +1516,7 @@ class Main(Star):
 
                 # 给主人加钱
                 master_data = self._get_user_data(group_id, master_id)
+                master_before = master_data.get("coins", 0)
                 master_data["coins"] = master_data.get("coins", 0) + tax
                 self._save_user_data(group_id, master_id, master_data)
 
@@ -1487,6 +1525,7 @@ class Main(Star):
                 user_data["coins"] = user_data.get("coins", 0) + net_income
                 lines.append(f"\n💸 上交主人({master_name}) {int(tax_rate * 100)}%：{tax} 金币")
                 lines.append(f"💰 实得收入：{net_income} 金币")
+                lines.append(self._format_amount_change(master_before, master_data["coins"], f"👑 主人({master_name})余额"))
             else:
                 user_data["coins"] = user_data.get("coins", 0) + total
                 lines.append(f"\n💰 总计获得 {total} 金币")
@@ -1495,7 +1534,7 @@ class Main(Star):
             self._set_cooldown(user_data, "work")
             self._save_user_data(group_id, user_id, user_data)
 
-            lines.append(f"💵 当前余额：{user_data['coins']} 金币")
+            lines.append(self._format_amount_change(coins_before, user_data["coins"], "💵 余额"))
             
             yield event.plain_result("\n".join(lines))
 
@@ -1603,6 +1642,7 @@ class Main(Star):
                     yield event.plain_result(f"⏰ 宠物训练冷却中，剩余 {hours}小时{mins}分钟。")
                     return
 
+                coins_before = user_data.get("coins", 0)
                 cost = int(pet["value"] * self.config.get("train_cost_rate", 0.1))
                 if user_data.get("coins", 0) < cost:
                     yield event.plain_result(f"❌ 金币不足，训练需要 {cost} 金币。")
@@ -1629,7 +1669,11 @@ class Main(Star):
                     msg = random.choice(self.train_copywriting.get("success", [
                         "{name} 训练成功，身价提升 {increase}，当前 {value} 金币。"
                     ])).format(name=name, increase=increase, value=pet["value"])
-                    yield event.plain_result(f"✅ {msg}\n⭐ 当前阶段：{pet['evolution_stage']}")
+                    yield event.plain_result(
+                        f"✅ {msg}\n"
+                        f"⭐ 当前阶段：{pet['evolution_stage']}\n"
+                        f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
+                    )
                 else:
                     # 训练失败
                     decrease = random.randint(10, 25)
@@ -1642,7 +1686,11 @@ class Main(Star):
                     msg = random.choice(self.train_copywriting.get("failure", [
                         "{name} 训练失败，身价下降 {decrease}，当前 {value} 金币。"
                     ])).format(name=name, decrease=decrease, value=pet["value"])
-                    yield event.plain_result(f"❌ {msg}\n⭐ 当前阶段：{pet['evolution_stage']}")
+                    yield event.plain_result(
+                        f"❌ {msg}\n"
+                        f"⭐ 当前阶段：{pet['evolution_stage']}\n"
+                        f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
+                    )
 
     # ==================== 命令：赎身 ====================
     @filter.command("赎身")
@@ -1673,6 +1721,7 @@ class Main(Star):
                 return
 
             # 扣除金币，支付给主人
+            coins_before = user_data.get("coins", 0)
             user_data["coins"] -= pet_value
             master_data = self._get_user_data(group_id, master_id)
             master_data["coins"] = master_data.get("coins", 0) + pet_value
@@ -1696,7 +1745,7 @@ class Main(Star):
                 f"🎉 赎身成功！{user_name} 重获自由！\n"
                 f"💰 支付 {pet_value} 金币给 {master_name}\n"
                 f"🛡️ 获得 {protection_hours} 小时保护期\n"
-                f"💵 当前余额：{user_data['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：一键训练 ====================
@@ -1716,6 +1765,7 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user_data = self._get_user_data(group_id, user_id)
+            coins_before = user_data.get("coins", 0)
             pets = user_data.get("pets", [])
 
             if not pets:
@@ -1780,7 +1830,7 @@ class Main(Star):
             summary = f"【📚 批量训练报告】\n"
             summary += f"成功：{success_count} | 失败：{fail_count} | 冷却：{cooldown_count}\n"
             summary += f"💰 总消耗：{total_cost} 金币\n"
-            summary += f"💵 当前余额：{user_data['coins']} 金币\n\n"
+            summary += f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}\n\n"
             summary += "\n".join(results[:10])  # 只显示前10条
 
             if len(results) > 10:
@@ -1850,6 +1900,7 @@ class Main(Star):
                     return
 
                 # 执行进化（20%失败率）
+                coins_before = user_data.get("coins", 0)
                 user_data["coins"] -= cost
                 if random.random() < 0.8:  # 80%成功率
                     pet["evolution_stage"] = next_stage
@@ -1861,7 +1912,7 @@ class Main(Star):
                         f"💰 消耗 {cost} 金币\n"
                         f"📈 打工收益 +{int(work_bonus * 100)}%\n"
                         f"📈 训练成功率 +{int(train_bonus * 100)}%\n"
-                        f"💵 当前余额：{user_data['coins']} 金币"
+                        f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
                     )
                 else:
                     # 进化失败，身价-10%
@@ -1874,7 +1925,7 @@ class Main(Star):
                         f"💔 进化失败！{name} 身价下降 {loss}，当前 {pet['value']} 金币。\n"
                         f"💰 消耗 {cost} 金币\n"
                         f"⭐ 当前阶段：{pet['evolution_stage']}\n"
-                        f"💵 当前余额：{user_data['coins']} 金币"
+                        f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
                     )
 
     # ==================== 命令：我的宠物 ====================
@@ -1942,6 +1993,7 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
+            coins_before = user.get("coins", 0)
 
             self._update_loan_interest(user)
             if await self._check_and_liquidate(event, group_id, user_id, user):
@@ -2024,6 +2076,7 @@ class Main(Star):
                 yield event.plain_result(f"❌ 升级需要 {cost} 金币，你的余额不足。")
                 return
 
+            coins_before = user.get("coins", 0)
             user["coins"] -= cost
             user["bank_level"] = level + 1
             self._save_user_data(group_id, user_id, user)
@@ -2032,7 +2085,8 @@ class Main(Star):
             yield event.plain_result(
                 f"✅ 升级成功！信用等级提升至 Lv.{user['bank_level']}\n"
                 f"📦 新存储上限：{new_limit} 金币\n"
-                f"💰 消耗 {cost} 金币，当前余额 {user['coins']} 金币"
+                f"💰 消耗 {cost} 金币\n"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：银行利息 ====================
@@ -2078,13 +2132,14 @@ class Main(Star):
             interest = self._calculate_compound_interest(bank, rate, hours)
 
             user["last_interest_time"] = now
+            coins_before = user.get("coins", 0)
             user["coins"] = user.get("coins", 0) + interest
             self._save_user_data(group_id, user_id, user)
 
             yield event.plain_result(
                 f"✅ 成功领取利息 {interest} 金币到余额。\n"
                 f"⏰ 计息时长：{hours} 小时\n"
-                f"💵 当前余额：{user['coins']} 金币\n"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}\n"
                 f"🏦 当前存款：{user['bank']} 金币"
             )
 
@@ -2110,6 +2165,10 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
 
+            coins_before = user.get("coins", 0)
+            bank_before = user.get("bank", 0)
+            interest = self._settle_bank_interest(user)
+
             if user.get("coins", 0) < amount:
                 yield event.plain_result("❌ 现金不足。")
                 return
@@ -2132,10 +2191,12 @@ class Main(Star):
             user["bank"] = current_bank + amount
             self._save_user_data(group_id, user_id, user)
 
+            interest_msg = f"💹 已结算利息 {interest} 金币\n" if interest > 0 else ""
             yield event.plain_result(
                 f"✅ 存款成功！存入 {amount} 金币。\n"
-                f"💵 当前余额：{user['coins']} 金币\n"
-                f"🏦 当前存款：{user['bank']} 金币\n"
+                f"{interest_msg}"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}\n"
+                f"{self._format_amount_change(bank_before, user['bank'], '🏦 存款')}\n"
                 f"📦 存储上限：{limit} 金币"
             )
 
@@ -2161,6 +2222,10 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
 
+            coins_before = user.get("coins", 0)
+            bank_before = user.get("bank", 0)
+            interest = self._settle_bank_interest(user)
+
             if user.get("bank", 0) < amount:
                 yield event.plain_result("❌ 银行存款不足。")
                 return
@@ -2169,10 +2234,12 @@ class Main(Star):
             user["coins"] = user.get("coins", 0) + amount
             self._save_user_data(group_id, user_id, user)
 
+            interest_msg = f"💹 已结算利息 {interest} 金币\n" if interest > 0 else ""
             yield event.plain_result(
                 f"✅ 取款成功！取出 {amount} 金币。\n"
-                f"💵 当前余额：{user['coins']} 金币\n"
-                f"🏦 当前存款：{user['bank']} 金币"
+                f"{interest_msg}"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}\n"
+                f"{self._format_amount_change(bank_before, user['bank'], '🏦 存款')}"
             )
 
     # ==================== 命令：贷款 ====================
@@ -2211,6 +2278,7 @@ class Main(Star):
                 self._save_user_data(group_id, user_id, user)
                 return
 
+            coins_before = user.get("coins", 0)
             user["loan_amount"] = current_loan + amount
             user["coins"] = user.get("coins", 0) + amount
             user["loan_principal"] = user.get("loan_principal", 0) + amount
@@ -2219,7 +2287,7 @@ class Main(Star):
 
             msg = f"✅ 贷款成功！获得 {amount} 金币。\n"
             msg += f"💸 当前欠款：{user['loan_amount']} (本金 {user['loan_principal']})\n"
-            msg += f"💵 当前余额：{user['coins']} 金币\n"
+            msg += f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}\n"
             msg += "⚠️ 请按时还款，利息按小时复利计算！"
 
             yield event.plain_result(msg)
@@ -2270,6 +2338,7 @@ class Main(Star):
                 return
 
             # 执行还款
+            coins_before = user.get("coins", 0)
             user["coins"] -= real_repay
             user["loan_amount"] -= real_repay
 
@@ -2289,7 +2358,7 @@ class Main(Star):
 
             msg = f"✅ 还款成功！支付 {real_repay} 金币。\n"
             msg += f"💸 剩余欠款：{user['loan_amount']} (本金 {user['loan_principal']})\n"
-            msg += f"💵 当前余额：{user['coins']} 金币"
+            msg += f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
 
             yield event.plain_result(msg)
 
@@ -2365,6 +2434,8 @@ class Main(Star):
                     return
 
                 # 执行转账
+                sender_before = user_data.get("coins", 0)
+                target_before = target_data.get("coins", 0)
                 user_data["coins"] -= total_cost
                 target_data["coins"] = target_data.get("coins", 0) + amount
                 self._set_cooldown(user_data, "transfer")
@@ -2417,8 +2488,8 @@ class Main(Star):
                     f"💸 从 {user_name} 转给 {target_name}\n"
                     f"💰 转账金额：{amount} 金币\n"
                     f"💵 手续费：{fee} 金币 ({int(fee_rate * 100)}%)\n"
-                    f"📊 你的余额：{user_data['coins']} 金币\n"
-                    f"📊 对方余额：{target_data['coins']} 金币"
+                    f"{self._format_amount_change(sender_before, user_data['coins'], '📊 你的余额')}\n"
+                    f"{self._format_amount_change(target_before, target_data['coins'], '📊 对方余额')}"
                     f"{loan_status_msg}"
                 )
 
@@ -2781,6 +2852,8 @@ class Main(Star):
 
                 if random.random() < success_rate:
                     # 抢劫成功
+                    user_before = user_data.get("coins", 0)
+                    target_before = target_data.get("coins", 0)
                     rate = random.randint(5, 20) / 100
                     amount = int(target_data["coins"] * rate)
                     target_data["coins"] -= amount
@@ -2795,7 +2868,8 @@ class Main(Star):
                     yield event.plain_result(
                         f"💰 抢劫成功！{user_name} 从 {target_name} 手中抢走 {amount} 金币。\n"
                         f"🎲 成功率：{int(success_rate * 100)}%\n"
-                        f"💵 当前余额：{user_data['coins']} 金币"
+                        f"{self._format_amount_change(user_before, user_data['coins'], '💵 你的余额')}\n"
+                        f"{self._format_amount_change(target_before, target_data['coins'], '💵 对方余额')}"
                     )
                 else:
                     # 抢劫失败：计算罚款并暂存状态
@@ -2840,12 +2914,16 @@ class Main(Star):
                 yield event.plain_result(f"❌ 余额不足！需要 {fine} 金币。请充值或选择 /坐牢。")
                 return
 
+            coins_before = user_data.get("coins", 0)
             user_data["coins"] -= fine
             user_data["rob_pending_penalty"] = None  # 清除状态
             user_data["rob_fail_streak"] += 1  # 增加连败次数，下次更贵
 
             self._save_user_data(group_id, user_id, user_data)
-            yield event.plain_result(f"💸 罚款缴纳成功！扣除 {fine} 金币。下次抢劫失败罚款倍率将提升。")
+            yield event.plain_result(
+                f"💸 罚款缴纳成功！扣除 {fine} 金币。下次抢劫失败罚款倍率将提升。\n"
+                f"{self._format_amount_change(coins_before, user_data['coins'], '💵 余额')}"
+            )
 
     # ==================== 命令：坐牢 ====================
     @filter.command("坐牢")
@@ -2943,9 +3021,13 @@ class Main(Star):
         group_id = str(event.message_obj.group_id)
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
+            coins_before = user.get("coins", 0)
             user["coins"] = user.get("coins", 0) + amount
             self._save_user_data(group_id, user_id, user)
-            yield event.plain_result(f"✅ 已发放 {amount} 金币，当前余额 {user['coins']} 金币。")
+            yield event.plain_result(
+                f"✅ 已发放 {amount} 金币。\n"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
+            )
 
     @filter.command("跳过冷却")
     async def skip_cooldown(self, event: AstrMessageEvent):
@@ -2982,7 +3064,8 @@ class Main(Star):
             if user.get("coins", 0) < price:
                 yield event.plain_result(f"❌ 金币不足！购买一间公寓需要 {price} 金币。")
                 return
-                
+
+            coins_before = user.get("coins", 0)
             user["coins"] -= price
             user["house_count"] = user.get("house_count", 1) + 1
             
@@ -2994,7 +3077,7 @@ class Main(Star):
                 f"🎉 购房成功！恭喜你成为新的房产主！\n"
                 f"🏠 当前房产：{user['house_count']} 套\n"
                 f"🐾 容纳上限：{new_capacity} 只宠物\n"
-                f"💵 当时余额：{user['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：租房 ====================
@@ -3029,6 +3112,7 @@ class Main(Star):
                 new_expiry = now + (7 * 86400)
                 msg_type = "租房"
                 
+            coins_before = user.get("coins", 0)
             user["coins"] -= price
             user["rented_house_expiry"] = new_expiry
             
@@ -3041,7 +3125,7 @@ class Main(Star):
                 f"🎉 {msg_type}成功！\n"
                 f"📅 到期时间：{days_left}天后\n"
                 f"🐾 临时扩容：+5 容量 (总上限: {new_capacity})\n"
-                f"💵 当时余额：{user['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：我的公寓 ====================
@@ -3206,7 +3290,8 @@ class Main(Star):
             if user.get("coins", 0) < total_price:
                 yield event.plain_result(f"❌ 余额不足！购买 {count} 个 {item['name']} 需要 {total_price} 金币。")
                 return
-                
+
+            coins_before = user.get("coins", 0)
             user["coins"] -= total_price
             
             # 由于没有复杂的背包系统，简单用字典计数
@@ -3219,7 +3304,7 @@ class Main(Star):
                 f"🎉 购买成功！\n"
                 f"获得：{item['icon']} {item['name']} x{count}\n"
                 f"花费：{total_price} 金币\n"
-                f"当前余额：{user['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             )
 
     @filter.command("我的背包", alias={"背包"})
@@ -3231,6 +3316,7 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
             inventory = user.get("inventory", {})
+            coins_before = user.get("coins", 0)
             
             if not inventory:
                 yield event.plain_result("🎒 你的背包空空如也。")
@@ -3282,6 +3368,7 @@ class Main(Star):
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
             inventory = user.get("inventory", {})
+            coins_before = user.get("coins", 0)
             
             if inventory.get(item_id, 0) < count:
                 yield event.plain_result(f"❌ 数量不足！你只有 {inventory.get(item_id, 0)} 个。")
@@ -3506,7 +3593,11 @@ class Main(Star):
                 if inventory[item_id] <= 0:
                     del inventory[item_id]
                 self._save_user_data(group_id, user_id, user)
-                
+
+            coins_after = user.get("coins", 0)
+            if coins_after != coins_before:
+                msg = msg.rstrip()
+                msg += f"\n{self._format_amount_change(coins_before, coins_after, '💵 余额')}"
             yield event.plain_result(msg)
 
     # ==================== 命令：每日签到 ====================
@@ -3518,6 +3609,7 @@ class Main(Star):
         
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
+            coins_before = user.get("coins", 0)
             
             last_checkin = user.get("last_checkin", 0)
             now = int(time.time())
@@ -3535,7 +3627,7 @@ class Main(Star):
             coins = random.randint(200, 500)
             user["coins"] += coins
             user["last_checkin"] = now
-            
+
             msg = f"✅ 签到成功！\n💰 获得金币：{coins}"
             
             # 20% 概率额外获得道具 (随机选一个)
@@ -3545,7 +3637,8 @@ class Main(Star):
                 inventory = user.setdefault("inventory", {})
                 inventory[item_id] = inventory.get(item_id, 0) + 1
                 msg += f"\n🎁 幸运爆棚！额外获得：{item['icon']} {item['name']} x1"
-                
+
+            msg += f"\n{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             self._save_user_data(group_id, user_id, user)
             yield event.plain_result(msg)
 
@@ -3623,6 +3716,7 @@ class Main(Star):
 
         async with session_lock_manager.acquire_lock(f"pet_market_{group_id}_{user_id}"):
             user = self._get_user_data(group_id, user_id)
+            coins_before = user.get("coins", 0)
             if user.get("coins", 0) < total_cost:
                 yield event.plain_result(f"❌ 余额不足！需要 {total_cost} 金币。")
                 return
@@ -3717,7 +3811,8 @@ class Main(Star):
                     msg.append(f"💰 总计奖金：{total_prize} 金币")
                 else:
                     msg.append("💔 全军覆没，本次未中奖。")
-                    
+
+            msg.append(self._format_amount_change(coins_before, user["coins"], "💵 余额"))
             yield event.plain_result("\n".join(msg))
 
     @filter.command("管理员发金币")
@@ -3870,6 +3965,7 @@ class Main(Star):
                 user["holdings"] = {}
 
             # 扣款
+            coins_before = user.get("coins", 0)
             user["coins"] -= amount
             
             # 记录持仓
@@ -3890,7 +3986,7 @@ class Main(Star):
                 f"📄 产品：{data['name']} ({code})\n"
                 f"💰 投入：{amount} 金币\n"
                 f"📊 份额：{buy_shares:.4f}\n"
-                f"💵 当前余额：{user['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：卖出 ====================
@@ -3964,6 +4060,7 @@ class Main(Star):
             payout = int(sell_value)
             profit = payout - cost_basis
 
+            coins_before = user.get("coins", 0)
             user["coins"] += payout
             # 更新成本 (总量变少，单价不变)
             holding["total_cost"] -= cost_basis
@@ -3978,7 +4075,7 @@ class Main(Star):
                 f"📄 产品：{instrument_data['name']}\n"
                 f"💰 获得资金：{payout} 金币\n"
                 f"📈 盈亏：{profit:+.2f} 金币\n"
-                f"💵 当前余额：{user['coins']} 金币"
+                f"{self._format_amount_change(coins_before, user['coins'], '💵 余额')}"
             )
 
     # ==================== 命令：我的持仓 ====================

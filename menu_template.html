@@ -17,7 +17,7 @@
             min-height: 100vh;
         }
         .container {
-            max-width: 800px;
+            max-width: 980px;
             margin: 0 auto;
             background: white;
             border-radius: 20px;
@@ -41,12 +41,14 @@
         }
         .menu-list {
             padding: 20px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
         }
         .menu-item {
             background: #f8f9fa;
             border-radius: 12px;
             padding: 15px;
-            margin-bottom: 12px;
             transition: all 0.3s ease;
             border-left: 4px solid #667eea;
         }
@@ -75,6 +77,11 @@
             color: #999;
             font-size: 12px;
             background: #f8f9fa;
+        }
+        @media (max-width: 700px) {
+            .menu-list {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>

@@ -3,7 +3,7 @@
 把群友变成宠物，开启养成、打工、训练、银行、PK决斗、进化、排行榜的完整互动游戏！
 
 ![AstrBot](https://img.shields.io/badge/AstrBot-v4.5.7+-blue)
-![Version](https://img.shields.io/badge/Version-v2.3.6-green)
+![Version](https://img.shields.io/badge/Version-v2.3.7-green)
 
 ---
 

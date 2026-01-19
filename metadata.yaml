@@ -1,6 +1,6 @@
 name: "astrbot_plugin_pet_market"
 author: "Antigravity AI"
 desc: "群聊宠物互动游戏 - 购买、训练、打工、银行、PK决斗、进化、抢劫等系统"
-version: "v2.3.6"
+version: "v2.3.7"
 repo: "https://github.com/wangyingxuan383-ai/astrbot_plugin_pet_market"
 display_name: "🐾 宠物市场"
