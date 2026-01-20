@@ -1,0 +1,63 @@
+R1 | U2 | purchase_pet_subsidy from U1 | coins 50000->50150 (+150) | amount=150
+R1 | U1 | purchase_pet U2 | coins 50000->49700 (-300) | subsidy_to_pet=150
+R1 | U1 | work_tax | coins 49700->49703 (+3) | from=U2:3
+R1 | U2 | work | coins 50150->50157 (+7) | gross=10
+R1 | U4 | train U5 | coins 50000->49965 (-35) | cost=35
+R1 | U4 | sell_pet U5 | coins 49965->50296 (+331)
+R1 | U3 | purchase_pet U5 | coins 50000->49669 (-331)
+R1 | U3 | deposit 5000 | coins 49669->44669 (-5000) | bank=5000
+R1 | U4 | loan 8000 | coins 50296->58296 (+8000)
+R1 | U4 | transfer 3000->U6 | coins 58296->54996 (-3300) | fee=300
+R1 | U6 | transfer_recv 3000 from U4 | coins 50000->53000 (+3000)
+R1 | U6 | buy_item 105x20 | coins 53000->47000 (-6000) | cost=6000
+R1 | U6 | use_item 105x20 | coins 47000->47000 (+0) | pet=U7 value+=688
+R1 | U5 | buy_item 104x1 | coins 50000->49800 (-200) | cost=200
+R1 | U5 | use_item 104x1 | coins 49800->49900 (+100) | win=100
+R1 | U6 | buy_instrument F101 | coins 47000->42000 (-5000) | amount=5000 shares=5000.00 avg_cost=1.00
+R1 | U7 | rob_success U8 | coins 50000->59000 (+9000) | amount=9000
+R1 | U8 | rob_loss U7 | coins 50000->41000 (-9000) | amount=9000
+R1 | U9 | buy_house | coins 50000->30000 (-20000) | price=20000
+R1 | U10 | checkin | coins 50000->50499 (+499) | reward=499
+R1 | U3 | lottery | coins 44669->44469 (-200) | award=0
+Round 1 summary:
+U1 coins=49703
+U10 coins=50499
+U2 coins=50157
+U3 coins=44469
+U4 coins=54996
+U5 coins=49900
+U6 coins=42000
+U7 coins=59000
+U8 coins=41000
+U9 coins=30000
+R2 | U2 | ransom | coins 50157->49834 (-323) | pay_to=U1:323
+R2 | U1 | ransom_receive | coins 49703->50026 (+323) | from=U2
+R2 | U6 | evolve U7 | coins 42000->39000 (-3000) | cost=3000
+R2 | U6 | batch_train | coins 39000->38737 (-263) | total_cost=263
+R2 | U3 | release_pet U5 | coins 44469->44574 (+105) | refund=105
+R2 | U3 | collect_interest 6h | coins 44574->44881 (+307) | interest=307
+R2 | U3 | withdraw 2000 | coins 44881->46881 (+2000) | bank=3000
+R2 | U3 | upgrade_bank | coins 46881->46781 (-100) | cost=100
+R2 | U4 | repay 2000 | coins 54996->52996 (-2000)
+R2 | U8 | rob_fail | coins 41000->41000 (+0) | fine=352
+R2 | U8 | pay_fine | coins 41000->40648 (-352) | fine=352
+R2 | U9 | rent_house | coins 30000->28000 (-2000) | price=2000
+R2 | U5 | buy_item 108x1 | coins 49900->47900 (-2000) | cost=2000
+R2 | U5 | use_item 108x1 | coins 47900->51900 (+4000) | delta=4000
+R2 | U6 | buy_item 107x1 | coins 38737->36737 (-2000) | cost=2000
+R2 | U6 | use_item 107x1 | coins 36737->36737 (+0) | no_coin_change
+R2 | U10 | buy_item 109x1 | coins 50499->45499 (-5000) | cost=5000
+R2 | U10 | use_item 109x1 | coins 45499->43499 (-2000) | delta=-2000
+R2 | market | update_price F101 1.0->1.2
+R2 | U6 | sell_instrument F101 | coins 36737->42737 (+6000) | proceeds=6000 pnl=1000
+Round 2 summary:
+U1 coins=50026
+U10 coins=43499
+U2 coins=49834
+U3 coins=46781
+U4 coins=52996
+U5 coins=51900
+U6 coins=42737
+U7 coins=59000
+U8 coins=40648
+U9 coins=28000
