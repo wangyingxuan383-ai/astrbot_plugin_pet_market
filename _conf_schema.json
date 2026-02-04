@@ -38,6 +38,24 @@
     "default": 0.1,
     "hint": "例如：0.1 表示 10%"
   },
+  "pet_per_house": {
+    "type": "int",
+    "description": "每套公寓可容纳的宠物数量",
+    "default": 5,
+    "hint": "例如：5 表示每套公寓最多 5 只宠物"
+  },
+  "house_price": {
+    "type": "int",
+    "description": "购买公寓价格（金币）",
+    "default": 20000,
+    "hint": "例如：20000 表示购买一套公寓需要 20000 金币"
+  },
+  "house_rent_price": {
+    "type": "int",
+    "description": "租房价格（金币）",
+    "default": 2000,
+    "hint": "例如：2000 表示租房一次需要 2000 金币"
+  },
   "bank_initial_limit": {
     "type": "int",
     "description": "银行初始存储上限（金币）",

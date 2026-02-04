@@ -5,6 +5,7 @@ import math
 import time
 import json
 import asyncio
+import copy
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
@@ -255,6 +256,7 @@ class Main(Star):
         self.copywriting: Dict = {}
         self.train_copywriting: Dict = {}
         self._dirty = False  # 脏数据标记
+        self._dirty_version = 0  # 数据变更版本号（用于避免保存竞态）
         self._save_task: Optional[asyncio.Task] = None
 
         # 【规范化】使用 get_astrbot_data_path 获取标准数据目录
@@ -398,9 +400,14 @@ class Main(Star):
                 await asyncio.sleep(60)
                 await self._process_debt_queue() # 处理追债
                 if self._dirty:
+                    version_before = self._dirty_version
                     await self._save_data_async()
-                    self._dirty = False
-                    logger.debug("[宠物市场] 自动保存完成")
+                    # 仅当保存期间没有新改动，才清除脏标记
+                    if self._dirty_version == version_before:
+                        self._dirty = False
+                        logger.debug("[宠物市场] 自动保存完成")
+                    else:
+                        logger.debug("[宠物市场] 保存期间检测到新改动，保持脏标记")
         except asyncio.CancelledError:
             logger.debug("[宠物市场] 自动保存任务已取消")
             raise
@@ -431,8 +438,9 @@ class Main(Star):
             logger.info(f"[宠物市场] 数据加载成功，共 {len(self.pet_data)} 个群组，路径：{DATA_FILE}")
         except Exception as e:
             logger.error(f"[宠物市场] 数据加载失败: {e}，尝试恢复备份...")
-            self._try_restore_backup()
-            self.pet_data = {}
+            restored = self._try_restore_backup()
+            if not restored:
+                self.pet_data = {}
 
     def _save_data(self):
         """保存数据到文件（同步版本，含备份机制）"""
@@ -480,8 +488,8 @@ class Main(Star):
     async def _save_data_async(self):
         """异步保存数据（使用线程池避免阻塞）"""
         loop = asyncio.get_event_loop()
-        # 创建数据副本避免并发问题
-        data_copy = dict(self.pet_data)
+        # 创建深拷贝避免并发写入导致的数据不一致
+        data_copy = copy.deepcopy(self.pet_data)
         await loop.run_in_executor(_executor, self._write_data_file, data_copy)
 
     def _write_data_file(self, data: Dict):
@@ -569,15 +577,20 @@ class Main(Star):
                 "investments": [],  # 投资列表 [{id, type, amount, start_time, status, current_value, trend_history}]
                 "next_investment_id": 1  # 投资ID生成器
             }
-            self._dirty = True
+            self._mark_dirty()
             logger.info(f"[宠物市场] 新用户 {user_id} 初始化，发放 {INITIAL_COINS} 金币")
         return group_data[user_id]
+
+    def _mark_dirty(self):
+        """标记数据已变更（带版本号）"""
+        self._dirty = True
+        self._dirty_version += 1
 
     def _save_user_data(self, group_id: str, user_id: str, data: Dict):
         """保存用户数据（仅标记脏数据）"""
         data["last_active"] = int(time.time())
         self.pet_data.setdefault(group_id, {})[user_id] = data
-        self._dirty = True
+        self._mark_dirty()
 
     def _get_pets_in_group(self, group_id: str) -> Dict:
         """获取群内所有宠物数据"""
@@ -586,7 +599,7 @@ class Main(Star):
     def _remove_user_data(self, group_id: str, user_id: str):
         """删除用户数据"""
         self.pet_data.get(group_id, {}).pop(user_id, None)
-        self._dirty = True
+        self._mark_dirty()
 
     # ==================== 工具方法 ====================
     def _check_jailed(self, group_id: str, user_id: str) -> Tuple[bool, int]:
@@ -633,20 +646,32 @@ class Main(Star):
             return at_targets[-1]
 
         # 从文字提取QQ号（仅在没有@时使用）
-        # 注意：为避免与金额等数字混淆，仅匹配消息末尾的QQ号
+        # 注意：为避免与金额等数字混淆，优先选取非金额的5-11位数字
         import re
-        # 匹配消息末尾的5-11位数字（QQ号范围）
-        match = re.search(r'(\d{5,11})\s*$', event.message_str)
-        return match.group(1) if match else None
+        candidates = re.findall(r'\b(\d{5,11})\b', event.message_str)
+        if not candidates:
+            return None
+        amount = self._extract_amount(event)
+        if amount is not None:
+            for token in reversed(candidates):
+                if int(token) != amount:
+                    return token
+        return candidates[-1]
 
     def _extract_amount(self, event: AstrMessageEvent) -> Optional[int]:
         """从消息中提取金额数字"""
         import re
+        at_targets = []
+        for comp in event.message_obj.message:
+            if isinstance(comp, At):
+                at_targets.append(str(comp.qq))
         # 将金额上限从4位提升到8位，以支持更大的贷款和转账
-        match = re.search(r'\b(\d{1,8})\b', event.message_str)
-        if match:
+        matches = re.findall(r'\b(\d{1,8})\b', event.message_str)
+        for token in matches:
+            if token in at_targets:
+                continue
             try:
-                return int(match.group(1))
+                return int(token)
             except ValueError:
                 return None
         return None
@@ -883,19 +908,21 @@ class Main(Star):
         if hours >= 1:
             # 1. 计算理论上的复利后总金额（避免溢出）
             theoretical_loan = loan_total * ((1 + rate) ** hours)
-
-            # 2. 计算封顶金额 = 本金 + 本金*倍率
-            max_loan = int(principal * (1 + max_multiplier))
-
             if not math.isfinite(theoretical_loan):
-                theoretical_loan = max_loan if principal > 0 else loan_total
+                theoretical_loan = loan_total
             theoretical_loan = int(theoretical_loan)
 
-            # 3. 比较，取较小值
-            if principal > 0:
-                new_loan = min(theoretical_loan, max_loan)
-            else:
+            # 2. 如果倍率 <= 0，仅关闭清算，不对利息封顶
+            if max_multiplier <= 0:
                 new_loan = theoretical_loan
+            else:
+                # 计算封顶金额 = 本金 + 本金*倍率
+                max_loan = int(principal * (1 + max_multiplier))
+                # 比较，取较小值
+                if principal > 0:
+                    new_loan = min(theoretical_loan, max_loan)
+                else:
+                    new_loan = theoretical_loan
 
             interest_added = new_loan - loan_total
             if interest_added > 0:
@@ -3001,10 +3028,9 @@ class Main(Star):
         
         final_list = list(admins)
         
-        # 如果没有配置任何管理员，使用默认管理员
+        # 如果没有配置任何管理员，禁用管理员指令并提示配置
         if not final_list:
-            final_list = ["846994183", "3864670906"]
-            logger.info(f"[宠物市场] 使用默认管理员列表: {final_list}")
+            logger.warning("[宠物市场] 未配置管理员列表，管理员指令将不可用。请在 WebUI 配置 admin_uins。")
         else:
             logger.info(f"[宠物市场] 已加载 {len(final_list)} 个管理员: {final_list}")
         
@@ -3865,7 +3891,7 @@ class Main(Star):
         removed = len(pets)
 
         self.pet_data[group_id] = {}
-        self._dirty = True
+        self._mark_dirty()
         self._save_data()  # 立即保存
 
         yield event.plain_result(f"✅ 已清空本群所有数据，共 {removed} 条。")
