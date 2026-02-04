@@ -3,9 +3,13 @@
 把群友变成宠物，开启养成、打工、训练、银行、PK决斗、进化、排行榜的完整互动游戏！
 
 ![AstrBot](https://img.shields.io/badge/AstrBot-v4.5.7+-blue)
-![Version](https://img.shields.io/badge/Version-v2.3.7-green)
+![Version](https://img.shields.io/badge/Version-v2.3.8-green)
 
 ---
+
+## 📝 更新日志
+
+- v2.3.8：修复 WebUI 修改插件配置后不生效的问题（改为使用 AstrBot v4 注入的插件配置对象）。
 
 ## ✨ 功能特性
 

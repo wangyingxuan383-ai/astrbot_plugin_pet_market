@@ -245,10 +245,12 @@ class MarketManager:
 
 # ==================== 主类 ====================
 class Main(Star):
-    def __init__(self, context: Context, **kwargs):
-        super().__init__(context)
+    def __init__(self, context: Context, config=None, **kwargs):
+        # AstrBot v4+ 会在实例化插件时注入插件配置对象（AstrBotConfig，来源 _conf_schema.json + data/config/*_config.json）。
+        # 需要保存该对象引用，才能让 WebUI 保存后的配置热更新生效。
+        super().__init__(context, config=config)
+        self._plugin_config = config
         self.context = context
-        self.config = context._config
         self.pet_data: Dict = {}
         self.copywriting: Dict = {}
         self.train_copywriting: Dict = {}
@@ -273,6 +275,14 @@ class Main(Star):
         self._init_env()
         self._load_data()
         self._load_copywriting()
+
+    @property
+    def config(self):
+        """插件配置（优先使用 WebUI 注入的插件配置对象）。"""
+        if getattr(self, "_plugin_config", None) is not None:
+            return self._plugin_config
+        # 兼容：若未注入插件配置，则回退到 AstrBot 默认配置对象
+        return getattr(self.context, "_config", {})
 
     # ==================== 生命周期管理 ====================
     async def initialize(self):
